@@ -4,13 +4,23 @@
 # License: MIT
 
 import os
-from typing import Tuple
+from typing import Tuple, Optional, Dict
 from multiprocessing import get_context
 from dataclasses import dataclass
 import glob
 
+
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import DataLoader
+
+# Helper to get cache dir robustly
+def get_cache_dir(default_name, ws_path=None, base_dir=None):
+    if ws_path:
+        return os.path.join(ws_path, default_name)
+    elif base_dir:
+        return os.path.join(base_dir, default_name)
+    else:
+        return os.path.join(os.getcwd(), default_name)
 
 from mopadi.configs.config_base import BaseConfig
 from mopadi.dataset import *
@@ -26,13 +36,13 @@ from mopadi.diffusion.diffusion import space_timesteps
 
 @dataclass
 class PretrainConfig(BaseConfig):
-    name: str
-    path: str
+    name: Optional[str] = None
+    path: Optional[str] = None
     
 @dataclass
 class MILconfig(BaseConfig):
-    target_label: str = ""
-    target_dict: dict = None
+    target_label: Optional[str] = ""
+    target_dict: Optional[Dict] = None
     dim: int = 512
     num_heads: int = 8
     num_seeds: int = 4
@@ -55,16 +65,16 @@ class TrainConfig(BaseConfig):
     train_pred_xstart_detach: bool = True
     train_interpolate_prob: float = 0
     train_interpolate_img: bool = False
-    manipulate_mode: str = ''
-    manipulate_cls: str = None
-    manipulate_shots: int = None
+    manipulate_mode: Optional[str] = ''
+    manipulate_cls: Optional[str] = None
+    manipulate_shots: Optional[int] = None
     manipulate_loss: ManipulateLossType = ManipulateLossType.bce
     manipulate_znormalize: bool = False
     manipulate_seed: int = 0
     accum_batches: int = 1
     autoenc_mid_attn: bool = True
     batch_size: int = 16
-    batch_size_eval: int = None
+    batch_size_eval: Optional[int] = None
     beatgans_gen_type: GenerativeType = GenerativeType.ddim
     beatgans_loss_type: LossType = LossType.mse
     feat_loss: bool = False
@@ -74,9 +84,9 @@ class TrainConfig(BaseConfig):
     beatgans_rescale_timesteps: bool = False
     latent_znormalize: bool = False
     beta_scheduler: str = 'linear'
-    data_name: str = ''
-    data_val_name: str = None
-    diffusion_type: str = None
+    data_name: Optional[str] = ''
+    data_val_name: Optional[str] = None
+    diffusion_type: Optional[str] = None
     dropout: float = 0.1
     ema_decay: float = 0.9999
     eval_num_images: int = 5_000
@@ -89,10 +99,10 @@ class TrainConfig(BaseConfig):
     lr: float = 0.0001  # 0.0001 default (adam); 3-10x smaller for lion optimizer
     optimizer: OptimizerType = OptimizerType.adam  #adam or adamw or lion
     weight_decay: float = 0  # default - 0; lion - 3-10x larger than that for AdamW
-    model_conf: ModelConfig = None
-    model_name: ModelName = None
-    model_type: ModelType = None
-    net_attn: Tuple[int] = None
+    model_conf: Optional[ModelConfig] = None
+    model_name: Optional[ModelName] = None
+    model_type: Optional[ModelType] = None
+    net_attn: Optional[Tuple[int]] = None
     net_beatgans_attn_head: int = 1
     # not necessarily the same as the the number of style channels
     net_beatgans_embed_channels: int = 512 # conch v1.5 = 768
@@ -108,14 +118,14 @@ class TrainConfig(BaseConfig):
     net_beatgans_resnet_two_cond: bool = False
     net_beatgans_resnet_use_zero_module: bool = True
     net_beatgans_resnet_scale_at: ScaleAt = ScaleAt.after_norm
-    net_beatgans_resnet_cond_channels: int = None
-    net_ch_mult: Tuple[int] = None
+    net_beatgans_resnet_cond_channels: Optional[int] = None
+    net_ch_mult: Optional[Tuple[int]] = None
     net_ch: int = 64
-    net_enc_attn: Tuple[int] = None
-    net_enc_k: int = None
+    net_enc_attn: Optional[Tuple[int]] = None
+    net_enc_k: Optional[int] = None
     # number of resblocks for the UNET
-    net_num_input_res_blocks: int = None
-    net_enc_num_cls: int = None
+    net_num_input_res_blocks: Optional[int] = None
+    net_enc_num_cls: Optional[int] = None
     num_workers: int = 4 # 20 for dgx
     parallel: bool = False
     postfix: str = ''
@@ -129,20 +139,26 @@ class TrainConfig(BaseConfig):
     total_samples: int = 10_000_000
     steps_per_epoch: int = 5_000
     warmup: int = 0
-    pretrain: PretrainConfig = None
-    continue_from: PretrainConfig = None
-    eval_programs: Tuple[str] = None
+    pretrain: Optional[PretrainConfig] = None
+    continue_from: Optional[PretrainConfig] = None
+    eval_programs: Optional[Tuple[str]] = None
     # if present load the checkpoint from this path instead
-    eval_path: str = None
+    eval_path: Optional[str] = None
     base_dir: str = 'checkpoints'
     use_cache_dataset: bool = False
-    data_cache_dir: str = os.path.join(ws_path, 'cache')
-    work_cache_dir: str = os.path.join(ws_path, 'mopadi_cache')
+    ws_path: Optional[str] = None
+    data_cache_dir: Optional[str] = None
+    work_cache_dir: Optional[str] = None
     # to be overridden
     name: str = ''
 
 
     def __post_init__(self):
+        # Set cache dirs robustly if not provided
+        if self.data_cache_dir is None:
+            self.data_cache_dir = get_cache_dir('cache', self.ws_path, self.base_dir)
+        if self.work_cache_dir is None:
+            self.work_cache_dir = get_cache_dir('mopadi_cache', self.ws_path, self.base_dir)
         self.batch_size_eval = self.batch_size_eval or self.batch_size
         self.data_val_name = self.data_val_name or self.data_name
 
