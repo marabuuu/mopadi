@@ -27,9 +27,15 @@ from mopadi.mil.set_transformer import PMA, SAB
 from dotenv import load_dotenv
 load_dotenv()
 ws_path = os.getenv("WORKSPACE_PATH")
-
-font_dir = f'{ws_path}/wanshi-utils/HelveticaNeue.ttf'
-my_font = font_manager.FontProperties(fname=font_dir)
+my_font = None
+if ws_path:
+    font_dir = os.path.join(ws_path, "wanshi-utils", "HelveticaNeue.ttf")
+    if os.path.isfile(font_dir):
+        my_font = font_manager.FontProperties(fname=font_dir)
+    else:
+        print(f"Warning: Font file {font_dir} not found. Using default font.")
+else:
+    print("Warning: WORKSPACE_PATH not set. Using default font.")
 
 def extract_patient_id(filename, index=None):
     filename = filename.rsplit('.', 1)[0]
@@ -485,10 +491,24 @@ def test(model, loader_dict, target_label, out_dir, positive_weights):
 
     ax_prc.set_xlabel('Recall',fontsize=24)
     ax_prc.set_ylabel('Precision',fontsize=24)
-    ax_roc.set_xlabel('False Positive Rate', fontproperties=my_font, fontsize=24)
-    ax_roc.set_ylabel('True Positive Rate', fontproperties=my_font, fontsize=24)
+    if my_font:
+        ax_roc.set_xlabel('False Positive Rate', fontproperties=my_font, fontsize=24)
+        ax_roc.set_ylabel('True Positive Rate', fontproperties=my_font, fontsize=24)
+    else:
+        ax_roc.set_xlabel('False Positive Rate', fontsize=24)
+        ax_roc.set_ylabel('True Positive Rate', fontsize=24)
     ax_roc.set_aspect("equal")
-    ax_roc.set_title(f'AUC = {np.mean(aurocs):.3f}$\pm${np.std(aurocs):.3f}', fontsize=28)
+    # Filter out NaN/inf from aurocs before computing mean/std
+    aurocs_clean = [x for x in aurocs if np.isfinite(x)]
+    auc_mean = np.nan
+    auc_std = np.nan
+    if len(aurocs_clean) > 0:
+        auc_mean = np.nanmean(aurocs_clean)
+        auc_std = np.nanstd(aurocs_clean)
+    if np.isnan(auc_mean) or np.isnan(auc_std):
+        ax_roc.set_title('AUC not available', fontsize=28)
+    else:
+        ax_roc.set_title(f'AUC = {auc_mean:.3f}$\pm${auc_std:.3f}', fontsize=28)
 
     #fig_roc.savefig(f"{out_dir}/ROC-mil-{target_label}.pdf",dpi=300)
     fig_roc.savefig(f"{out_dir}/ROC-mil-{target_label}.png", dpi=300)
