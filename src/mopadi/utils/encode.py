@@ -2,7 +2,7 @@ from torchvision import transforms
 import torch
 import os
 
-from mopadi.configs.templates import *
+from mopadi.configs.templates import *  # type: ignore[reportWildcardImportFromLibrary]
 
 
 class ImageEncoder:
@@ -21,10 +21,15 @@ class ImageEncoder:
                 self.model.feat_extractor = FeatureExtractorVirchow2(device=device)
             elif feat_extractor == 'uni2':
                 self.model.feat_extractor = FeatureExtractorUNI2(device=device)
+            elif feat_extractor == 'genomic':
+                from mopadi.model.extractor import FeatureExtractorGenomic
+                self.model.feat_extractor = FeatureExtractorGenomic(
+                    feat_dim=getattr(autoenc_config, 'feat_dim', 1024), device=device
+                )
     
     def load_data(self, image_folder):
         print(f"Number of images found in the given image folder: {len(os.listdir(image_folder))}")
-        self.image_dataset = self.dataset(image_folder, do_augment=False, do_normalize=True)
+        self.image_dataset = self.dataset(image_folder, do_augment=False, do_normalize=True)  # type: ignore[misc]
         return self.image_dataset
 
     def _load_model(self, model_config, checkpoint_path):

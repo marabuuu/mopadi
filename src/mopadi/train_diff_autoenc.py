@@ -11,26 +11,27 @@ import numpy as np
 
 import pytorch_lightning as pl
 from pytorch_lightning import loggers as pl_loggers
-from pytorch_lightning.callbacks import *
+from pytorch_lightning.callbacks import *  # type: ignore[reportWildcardImportFromLibrary]
 
 import torch
-from torch.amp import autocast
+from torch.amp import autocast  # type: ignore[attr-defined]
 from torch.optim.optimizer import Optimizer
 from torch.utils.data.dataset import TensorDataset
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import SequentialLR, LambdaLR, CosineAnnealingWarmRestarts, CosineAnnealingLR
 from torchvision.utils import make_grid, save_image
 
-from mopadi.configs.config import *
-from mopadi.dataset import *
-from mopadi.utils.dist_utils import *
-from mopadi.utils.metrics import *
-from mopadi.utils.misc import *
+from mopadi.configs.config import *  # type: ignore[reportWildcardImportFromLibrary]
+from mopadi.dataset import *  # type: ignore[reportWildcardImportFromLibrary]
+from mopadi.utils.dist_utils import *  # type: ignore[reportWildcardImportFromLibrary]
+from mopadi.utils.metrics import *  # type: ignore[reportWildcardImportFromLibrary]
+from mopadi.utils.misc import *  # type: ignore[reportWildcardImportFromLibrary]
 from mopadi.model.extractor import (
     FeatureExtractorConch, FeatureExtractorConch15,
-    FeatureExtractorVirchow2, FeatureExtractorUNI2
+    FeatureExtractorVirchow2, FeatureExtractorUNI2,
+    FeatureExtractorGenomic,
 )
-from mopadi.dataset import WDSTilesWithFeatures
+from mopadi.dataset import WDSTilesWithFeatures, WDSTilesWithGenomicFeatures
 
 torch.set_float32_matmul_precision('medium')
 
@@ -46,7 +47,7 @@ class LitModel(pl.LightningModule):
 
         self.conf = conf
 
-        self.model = conf.make_model_conf().make_model()
+        self.model = conf.make_model_conf().make_model()  # type: ignore[assignment]
         self.ema_model = copy.deepcopy(self.model)
         self.ema_model.requires_grad_(False)
         self.ema_model.eval()
@@ -144,6 +145,10 @@ class LitModel(pl.LightningModule):
                 self.feat_extractor = FeatureExtractorVirchow2(device=self.device)
             elif self.conf.feat_extractor == 'uni2':
                 self.feat_extractor = FeatureExtractorUNI2(device=self.device)
+            elif self.conf.feat_extractor == 'genomic':
+                self.feat_extractor = FeatureExtractorGenomic(
+                    feat_dim=self.conf.feat_dim, device=self.device
+                )
 
         self.model.feat_extractor = self.feat_extractor
         self.ema_model.feat_extractor = self.feat_extractor
@@ -151,8 +156,8 @@ class LitModel(pl.LightningModule):
     def on_fit_start(self):
         # Make sure the extractor is on the same device as the model
         if self.feat_extractor is not None:
-            if hasattr(self.feat_extractor, "model"):
-                self.feat_extractor.model = self.feat_extractor.model.to(self.device)
+            if hasattr(self.feat_extractor, "model") and self.feat_extractor.model is not None:
+                self.feat_extractor.model = self.feat_extractor.model.to(self.device)  # type: ignore[assignment]
             if hasattr(self.feat_extractor, "device"):
                 self.feat_extractor.device = self.device
         # reattach in case of rewraps
@@ -165,17 +170,32 @@ class LitModel(pl.LightningModule):
                 shard_urls = expand_shards(self.conf.data_dirs)
                 one_shard = shard_urls[0]
 
-                mini_loader = WDSTilesWithFeatures(
-                    shards=one_shard,
-                    feature_dirs=self.conf.feature_dirs,
-                    feat_extractor=self.conf.feat_extractor,
-                    do_resize=self.conf.do_resize,
-                    img_size=self.conf.img_size,
-                    do_normalize=self.conf.do_normalize,
-                    pre_shuffle=0,
-                    post_shuffle=0,
-                    h5_cache_items=1,
-                ).to_loader(
+                if self.conf.feat_extractor == 'genomic':
+                    mini_ds = WDSTilesWithGenomicFeatures(
+                        shards=one_shard,
+                        genomic_feature_dirs=self.conf.feature_dirs,
+                        feat_extractor=self.conf.feat_extractor,
+                        do_resize=self.conf.do_resize,
+                        img_size=self.conf.img_size,
+                        do_normalize=self.conf.do_normalize,
+                        pre_shuffle=0,
+                        post_shuffle=0,
+                        h5_cache_items=1,
+                    )
+                else:
+                    mini_ds = WDSTilesWithFeatures(
+                        shards=one_shard,
+                        feature_dirs=self.conf.feature_dirs,
+                        feat_extractor=self.conf.feat_extractor,
+                        do_resize=self.conf.do_resize,
+                        img_size=self.conf.img_size,
+                        do_normalize=self.conf.do_normalize,
+                        pre_shuffle=0,
+                        post_shuffle=0,
+                        h5_cache_items=1,
+                    )
+
+                mini_loader = mini_ds.to_loader(
                     batch_size=self.conf.batch_size,
                     num_workers=0,
                     steps_per_epoch=1
@@ -196,7 +216,10 @@ class LitModel(pl.LightningModule):
                     print("  type:", type(batch))
                 print("=== END LIGHT SANITY CHECK ===\n")
 
-                self.sanity_check_precomputed_feats(n_batches=1)
+                if getattr(self.feat_extractor, 'supports_image_extraction', True):
+                    self.sanity_check_precomputed_feats(n_batches=1)
+                else:
+                    print("[INFO] Skipping feature sanity check (genomic features cannot be re-extracted from images).")
 
     def train_dataloader(self):
         """
@@ -268,13 +291,13 @@ class LitModel(pl.LightningModule):
             # divide by accum batches to make the accumulated gradient exact!
             for key in ['loss', 'vae', 'mmd', 'chamfer', 'arg_cnt']:
                 if key in losses:
-                    losses[key] = self.all_gather(losses[key]).mean()
+                    losses[key] = self.all_gather(losses[key]).mean()  # type: ignore[union-attr]
 
             if self.global_rank == 0:
-                self.logger.experiment.add_scalar('loss', losses['loss'], self.num_samples)
+                self.logger.experiment.add_scalar('loss', losses['loss'], self.num_samples)  # type: ignore[union-attr]
                 for key in ['vae', 'mmd', 'chamfer', 'arg_cnt']:
                     if key in losses:
-                        self.logger.experiment.add_scalar(f'loss/{key}', losses[key], self.num_samples)
+                        self.logger.experiment.add_scalar(f'loss/{key}', losses[key], self.num_samples)  # type: ignore[union-attr]
 
         return {'loss': loss}
 
@@ -321,9 +344,9 @@ class LitModel(pl.LightningModule):
                 if use_xstart:
                     all_x_T = all_x_T[:len(x_start)]
 
-                batch_size = min(len(all_x_T), self.conf.batch_size_eval)
+                batch_size = min(len(all_x_T), self.conf.batch_size_eval)  # type: ignore[arg-type]
                 # allow for superlarge models
-                loader = DataLoader(all_x_T, batch_size=batch_size)
+                loader = DataLoader(all_x_T, batch_size=batch_size)  # type: ignore[arg-type]
 
                 Gen, Reals = [], []
                 offset = 0
@@ -352,35 +375,35 @@ class LitModel(pl.LightningModule):
 
                 gen = torch.cat(Gen)
                 gen = self.all_gather(gen)
-                if gen.dim() == 5:
+                if gen.dim() == 5:  # type: ignore[union-attr]
                     # (n, c, h, w)
-                    gen = gen.flatten(0, 1)
+                    gen = gen.flatten(0, 1)  # type: ignore[union-attr]
 
                 if save_real and use_xstart:
                     # save the original images to the tensorboard
                     real = torch.cat(Reals, dim=0)
                     real = self.all_gather(real)
-                    if real.dim() == 5:
-                        real = real.flatten(0, 1)
+                    if real.dim() == 5:  # type: ignore[union-attr]
+                        real = real.flatten(0, 1)  # type: ignore[union-attr]
 
                     if self.global_rank == 0:
-                        grid_real = (make_grid(real) + 1) / 2
+                        grid_real = (make_grid(real) + 1) / 2  # type: ignore[arg-type]
                         sample_dir = os.path.join(self.conf.logdir, f'sample_real{postfix}')
                         if not os.path.exists(sample_dir):
                             os.makedirs(sample_dir)
                         path = os.path.join(sample_dir, f'{self.num_samples}.png')
                         save_image(grid_real, path)
-                        self.logger.experiment.add_image(f'sample{postfix}/real', grid_real, self.num_samples)
+                        self.logger.experiment.add_image(f'sample{postfix}/real', grid_real, self.num_samples)  # type: ignore[union-attr]
 
                 if self.global_rank == 0:
                     # save samples to the tensorboard
-                    grid = (make_grid(gen) + 1) / 2
+                    grid = (make_grid(gen) + 1) / 2  # type: ignore[arg-type]
                     sample_dir = os.path.join(self.conf.logdir, f'sample{postfix}')
                     if not os.path.exists(sample_dir):
                         os.makedirs(sample_dir)
                     path = os.path.join(sample_dir, '%d.png' % self.num_samples)
                     save_image(grid, path)
-                    self.logger.experiment.add_image(f'sample{postfix}', grid, self.num_samples)
+                    self.logger.experiment.add_image(f'sample{postfix}', grid, self.num_samples)  # type: ignore[union-attr]
             model.train()
 
         if self.conf.reconstruct_every_samples > 0 and is_time(
@@ -401,12 +424,12 @@ class LitModel(pl.LightningModule):
                                  model,
                                  self.conf,
                                  device=self.device,
-                                 train_data=self.train_data,
-                                 val_data=self.val_data,
+                                 train_data=self.train_data,  # type: ignore[arg-type]
+                                 val_data=self.val_data,  # type: ignore[arg-type]
                                  )
 
             if self.global_rank == 0:
-                self.logger.experiment.add_scalar(f'FID{postfix}', score, self.num_samples)
+                self.logger.experiment.add_scalar(f'FID{postfix}', score, self.num_samples)  # type: ignore[union-attr]
                 if not os.path.exists(self.conf.logdir):
                     os.makedirs(self.conf.logdir)
                 with open(os.path.join(self.conf.logdir, 'eval.txt'),
@@ -418,20 +441,20 @@ class LitModel(pl.LightningModule):
                     f.write(json.dumps(metrics) + "\n")
 
         def lpips(model, postfix):
-            if self.conf.model_type.has_autoenc(
+            if self.conf.model_type.has_autoenc(  # type: ignore[union-attr]
             ) and self.conf.train_mode.is_autoenc():
                 # {'lpips', 'ssim', 'mse'}
                 score = evaluate_lpips(self.eval_sampler,
                                        model,
                                        self.conf,
                                        device=self.device,
-                                       val_data=self.val_data,
+                                       val_data=self.val_data,  # type: ignore[arg-type]
                                        use_inverted_noise=True
                                        )
 
                 if self.global_rank == 0:
                     for key, val in score.items():
-                        self.logger.experiment.add_scalar(
+                        self.logger.experiment.add_scalar(  # type: ignore[union-attr]
                             f'{key}{postfix}', val, self.num_samples)
                     if not os.path.exists(self.conf.logdir):
                         os.makedirs(self.conf.logdir)
@@ -458,7 +481,7 @@ class LitModel(pl.LightningModule):
             # it's too slow
             # lpips(self.ema_model, '_ema')
 
-    def configure_optimizers(self):
+    def configure_optimizers(self):  # type: ignore[override]
         out = {}
         if self.conf.optimizer == OptimizerType.adam:
             optim = torch.optim.Adam(self.model.parameters(),
@@ -471,7 +494,7 @@ class LitModel(pl.LightningModule):
                                     eps=1e-06,
                                     weight_decay=self.conf.weight_decay)
         elif self.conf.optimizer == OptimizerType.lion:
-            from lion_pytorch import Lion
+            from lion_pytorch import Lion  # type: ignore[import-not-found]
             optim = Lion(self.model.parameters(), 
                                     lr=self.conf.lr, 
                                     betas=(0.95, 0.98),
@@ -543,7 +566,7 @@ class LitModel(pl.LightningModule):
                 elif imgs01.max() > 1.5:           # uint8 0..255
                     imgs01 = (imgs01 / 255.0).clamp(0, 1)
 
-                feats_new = self.feat_extractor.extract_feats(imgs01, need_grad=False).float()
+                feats_new = self.feat_extractor.extract_feats(imgs01, need_grad=False).float()  # type: ignore[union-attr]
 
                 if feats_new.shape != feats_pre.shape:
                     print(f"[FEAT SANITY] Shape mismatch: on-the-fly {tuple(feats_new.shape)} "
@@ -603,7 +626,7 @@ class LitModel(pl.LightningModule):
         """
         "inv<T>" = reconstruction with noise inversion
         """
-        for each in self.conf.eval_programs:
+        for each in self.conf.eval_programs:  # type: ignore[union-attr]
             if each.startswith('inv'):
                 self.model: BeatGANsAutoencModel
                 _, T = each.split('inv')
@@ -616,16 +639,16 @@ class LitModel(pl.LightningModule):
 
                 conf = self.conf.clone()
                 # eval whole val dataset
-                conf.eval_num_images = len(self.val_data)
+                conf.eval_num_images = len(self.val_data)  # type: ignore[arg-type]
                 score = evaluate_lpips(sampler,
                                        self.ema_model,
                                        conf,
                                        device=self.device,
-                                       val_data=self.val_data,
+                                       val_data=self.val_data,  # type: ignore[arg-type]
                                        use_inverted_noise=True
                                        )
                 for k, v in score.items():
-                    self.log(f'{k}_inv_ema_T{T}', v)
+                    self.log(f'{k}_inv_ema_T{T}', v)  # type: ignore[arg-type]
 
 
 def ema(source, target, decay):
@@ -667,9 +690,9 @@ def train(conf: TrainConfig, gpus, nodes=1, mode: str = 'train'):
     if os.path.exists(checkpoint_model_path):
         resume = True
     else:
-        if conf.continue_from is not None and os.path.exists(conf.continue_from):
+        if conf.continue_from is not None and os.path.exists(conf.continue_from):  # type: ignore[arg-type]
             # continue from a checkpoint
-            checkpoint_model_path = conf.continue_from
+            checkpoint_model_path = conf.continue_from  # type: ignore[assignment]
             resume = True
         else:
             resume = False
@@ -707,7 +730,7 @@ def train(conf: TrainConfig, gpus, nodes=1, mode: str = 'train'):
         # resume_from_checkpoint=checkpoint_model_path,  # older pytorch-lightning version (e.g. 2.0.6)
         # gpus=gpus,                               # older pytorch-lightning version (e.g. 2.0.6)
         devices=gpus,                              # only for newer pytorch-lightning versions (>2.1.1)
-        strategy=strategy,
+        strategy=strategy,  # type: ignore[arg-type]
         num_nodes=nodes,
         accelerator=accelerator,
         precision="16-mixed" if conf.fp16 else 32,
@@ -722,7 +745,7 @@ def train(conf: TrainConfig, gpus, nodes=1, mode: str = 'train'):
 
     if mode == 'train':
         if resume:
-            trainer.fit(model, ckpt_path=checkpoint_model_path)
+            trainer.fit(model, ckpt_path=checkpoint_model_path)  # type: ignore[arg-type]
         else:
             trainer.fit(model)
     elif mode == 'eval':
@@ -732,7 +755,7 @@ def train(conf: TrainConfig, gpus, nodes=1, mode: str = 'train'):
         dummy = DataLoader(TensorDataset(torch.tensor([0.] * conf.batch_size)),
                            batch_size=conf.batch_size)
         print('Loading from:', checkpoint_model_path)
-        state = torch.load(checkpoint_model_path, map_location='cpu')
+        state = torch.load(checkpoint_model_path, map_location='cpu')  # type: ignore[arg-type]
         print('Step:', state['global_step'])
         model.load_state_dict(state['state_dict'])
         # trainer.fit(model)

@@ -22,7 +22,7 @@ from torch.utils.data import Dataset, IterableDataset, Subset
 from torch.utils.data._utils.collate import default_collate
 from torchvision import transforms
 
-from mopadi.utils.dist_utils import *
+from mopadi.utils.dist_utils import *  # type: ignore[reportWildcardImportFromLibrary]
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -240,8 +240,8 @@ def get_tile_paths(root_dirs, test_patients_file_path, split, max_tiles_per_pati
                     continue
 
                 if split in {'train', 'none'} and max_tiles_per_patient is not None:
-                    max_tiles = sampling_ratios.get(cohort_id)
-                    if len(tile_files) > max_tiles:
+                    max_tiles = sampling_ratios.get(cohort_id)  # type: ignore[possibly-undefined]
+                    if max_tiles is not None and len(tile_files) > max_tiles:
                         tile_files = random.sample(tile_files, max_tiles)
 
                 tile_paths.extend(tile_files)
@@ -304,17 +304,17 @@ class TilesDataset(Dataset):
 class DefaultTilesDataset(TilesDataset):
     def __init__(self, 
                 root_dirs: list, 
-                test_patients_file_path: str = None,
+                test_patients_file_path: Optional[str] = None,
                 split: str = 'none',
-                max_tiles_per_patient: int = None,
+                max_tiles_per_patient: Optional[int] = None,
                 cohort_size_threshold: int = 1_400_000,
                 as_tensor: bool = True,
                 do_normalize: bool = True,
                 do_resize: bool = False,
                 img_size: int = 224,
                 process_only_zips: bool = False,
-                cache_pickle_tiles_path: str = None,
-                cache_cohort_sizes_path: str = None,
+                cache_pickle_tiles_path: Optional[str] = None,
+                cache_cohort_sizes_path: Optional[str] = None,
     ):
         super().__init__(
             root_dirs=root_dirs, 
@@ -363,29 +363,31 @@ class DefaultTilesDataset(TilesDataset):
 
     def get_images_by_patient_and_fname(self, patient_name, fname):
         # for simple cases, when we have patient folders/zips full of tiles
-        if patient_name in tile_path:
-            if fname in tile_path:
-                print(f"Found: {tile_path}")
-                image = Image.open(tile_path)
-                if self.transform:
-                    image = self.transform(image)
-                return {'image': image, 'filename': tile_path}
+        for tile_path in self.tile_paths:
+            if patient_name in tile_path:
+                if fname in tile_path:
+                    print(f"Found: {tile_path}")
+                    image = Image.open(tile_path)
+                    if self.transform:
+                        image = self.transform(image)
+                    return {'image': image, 'filename': tile_path}
+        return None
 
 
 class ImageTileDatasetWithFeatures(DefaultTilesDataset):
     def __init__(self, 
                 root_dirs: list, 
                 feature_dirs: list,
-                test_patients_file_path: str = None,
+                test_patients_file_path: Optional[str] = None,
                 split: str = 'none',
-                max_tiles_per_patient: int = None,
+                max_tiles_per_patient: Optional[int] = None,
                 cohort_size_threshold: int = 1_400_000,
                 feat_extractor: str = 'conch',
                 as_tensor: bool = True,
                 do_normalize: bool = True,
                 do_resize: bool = True,
                 process_only_zips: bool = False,
-                cache_pickle_tiles_path: str = None,
+                cache_pickle_tiles_path: Optional[str] = None,
     ):
         super().__init__(root_dirs=root_dirs, test_patients_file_path=test_patients_file_path, split=split, max_tiles_per_patient=max_tiles_per_patient, cohort_size_threshold=cohort_size_threshold, process_only_zips=process_only_zips, cache_pickle_tiles_path=cache_pickle_tiles_path)
         self.feature_dirs = feature_dirs
@@ -451,8 +453,8 @@ class ImageTileDatasetWithFeatures(DefaultTilesDataset):
 
             feat_path = os.path.join(feature_dir, f"{patient_id}.h5")
             with h5py.File(feat_path, 'r') as f:
-                features = torch.tensor(f['feats'][:])
-                coords = np.array(f["coords"][:])
+                features = torch.tensor(f['feats'][:])  # type: ignore[index]
+                coords = np.array(f["coords"][:])  # type: ignore[index]
                 #match_idx = np.where((tile_coords == coords).all(axis=1))[0]
 
                 coords_dict = {tuple(coord): idx for idx, coord in enumerate(coords)}
@@ -470,7 +472,7 @@ class ImageTileDatasetWithFeatures(DefaultTilesDataset):
         if self.transform:
             image = self.transform(image)
 
-        return {"img": image, "feat": features[match_idx], "coords": tile_coords, "filename": tile_path}
+        return {"img": image, "feat": features[match_idx], "coords": tile_coords, "filename": tile_path}  # type: ignore[possibly-undefined]
     
     def get_tile(self, tile_path):
         img = Image.open(tile_path).convert("RGB")
@@ -522,8 +524,8 @@ class ImageTileDatasetWithFeatures(DefaultTilesDataset):
         feat_path = self._find_feature_file(patient_id, cohort)
 
         with h5py.File(feat_path, "r") as f:
-            feats = torch.from_numpy(f["feats"][:])   # [N, D]
-            coords = f["coords"][:]                   # [N, 2] typically
+            feats = torch.from_numpy(f["feats"][:])   # type: ignore[index]  # [N, D]
+            coords = f["coords"][:]                   # type: ignore[index]  # [N, 2] typically
 
         patient_tile_paths = [self.tile_paths[i] for i in idxs]
         patient_tile_coords = np.asarray([extract_coords(p) for p in patient_tile_paths], dtype=np.float64)  # (M,2)
@@ -645,12 +647,15 @@ def _build_transform(
             resize = transforms.Resize(size=size, interpolation=transforms.InterpolationMode.BILINEAR, antialias=True)
         elif feat_extractor == "custom":
             resize = transforms.Resize(size=size, interpolation=transforms.InterpolationMode.BILINEAR, antialias=True)
+        elif feat_extractor == "genomic":
+            # Genomic conditioning: no encoder-specific resize needed, use img_size
+            resize = transforms.Resize(size=img_size, interpolation=transforms.InterpolationMode.BILINEAR, antialias=True)
         else:
             resize = transforms.Resize(size=img_size, interpolation=transforms.InterpolationMode.BILINEAR)
     else:
         resize = transforms.Resize(size=img_size, interpolation=transforms.InterpolationMode.BILINEAR) if do_resize else None
 
-    t: List[transforms.Transform] = []
+    t: list = []
     if resize is not None:
         t.append(resize)
     if as_tensor:
@@ -718,6 +723,8 @@ def _coords_from(sample):
     if cj is None:
         raise KeyError(f"coords.json missing for key={sample.get('__key__')}")
     d = _as_json(cj)  # handles bytes/str/dict
+    if d is None:
+        raise ValueError(f"coords.json parsed to None for key={sample.get('__key__')}")
 
     try:
         x = float(d["x"])
@@ -760,12 +767,12 @@ class WDSTiles(IterableDataset):
         handler = wds.handlers.reraise_exception if self.strict else wds.handlers.warn_and_continue
         shardshuffle_val = 0 if self.resampled else 10000
 
-        ds = wds.WebDataset(
+        ds = wds.WebDataset(  # type: ignore[attr-defined]
                 self.shards,
                 resampled=self.resampled,
                 shardshuffle=shardshuffle_val,
-                nodesplitter=wds.split_by_node,
-                workersplitter=wds.split_by_worker,
+                nodesplitter=wds.split_by_node,  # type: ignore[attr-defined]
+                workersplitter=wds.split_by_worker,  # type: ignore[attr-defined]
                 handler=handler,
             )
         if self.pre_shuffle:
@@ -784,7 +791,7 @@ class WDSTiles(IterableDataset):
     def to_loader(self, batch_size: int, num_workers: int, steps_per_epoch=None):
         ds = self.pipeline()
         ds = ds.batched(batch_size, partial=False, collation_fn=dict_collate)
-        loader = wds.WebLoader(
+        loader = wds.WebLoader(  # type: ignore[attr-defined]
             ds,
             batch_size=None,                 # already batched by .batched()
             num_workers=num_workers,
@@ -825,7 +832,7 @@ class H5OpenFileCache:
             return self.cache[h5_path]
 
         f = h5py.File(h5_path, "r")
-        coords = np.asarray(f[self.coords_key][:], dtype=np.float32)  # (N,2) as float32
+        coords = np.asarray(f[self.coords_key][:], dtype=np.float32)  # type: ignore[index]  # (N,2) as float32
         index = {f32pair_key(x, y): i for i, (x, y) in enumerate(coords)}
         payload = {"f": f, "feat_ds": f[self.feat_key], "index": index, "coords": coords}
         self.cache[h5_path] = payload
@@ -919,6 +926,138 @@ class WDSTilesWithFeatures(WDSTiles):
 
         self._h5_path_cache[key] = None
         return None
+
+
+class H5GenomicCache:
+    """
+    Lightweight cache for genomic .h5 files.
+
+    Each .h5 file is expected to contain a single genomic feature vector stored
+    under `feat_key` (default "feats") with shape ``(D,)`` or ``(1, D)``.
+    Unlike the image-feature H5 files, there are no per-tile coordinates — the
+    same vector conditions every tile from that patient.
+    """
+
+    def __init__(self, max_open: int = 32, feat_key: str = "feats"):
+        self.max_open = max_open
+        self.feat_key = feat_key
+        self.cache: OrderedDict = OrderedDict()  # path -> {"f": h5py.File, "feat": np.ndarray}
+
+    def get(self, h5_path: str) -> np.ndarray:
+        if h5_path in self.cache:
+            self.cache.move_to_end(h5_path)
+            return self.cache[h5_path]["feat"]
+
+        f = h5py.File(h5_path, "r")
+        feat = np.asarray(f[self.feat_key][:]).squeeze()  # type: ignore[index]  # (D,)
+        payload = {"f": f, "feat": feat}
+        self.cache[h5_path] = payload
+
+        if len(self.cache) > self.max_open:
+            _, old = self.cache.popitem(last=False)
+            try:
+                old["f"].close()
+            except Exception:
+                pass
+        return feat
+
+
+class WDSTilesWithGenomicFeatures(WDSTiles):
+    """
+    Streaming tiles conditioned on **patient-level genomic feature vectors**.
+
+    Instead of per-tile image-encoder features, every tile from the same patient
+    receives the *same* pre-computed genomic vector (e.g. latent representation
+    from a VAE trained on gene expression / methylation / …).
+
+    Expected H5 layout per patient::
+
+        <patient_id>.h5
+        └── feats   (D,)  or  (1, D)       ← genomic feature vector
+
+    No ``coords`` dataset is needed.
+
+    Parameters
+    ----------
+    shards : str | list[str]
+        WebDataset shard URLs.
+    genomic_feature_dirs : dict[str, str] | list[str]
+        Mapping cohort → directory of `.h5` files, or a list of directories
+        (the first whose path contains the cohort name will be used).
+    feat_key : str
+        HDF5 dataset name that stores the genomic vector.  Default ``"feats"``.
+    h5_cache_items : int
+        Number of .h5 files to keep open simultaneously.
+    **kwargs
+        Forwarded to :class:`WDSTiles` (transforms, shuffling, …).
+    """
+
+    def __init__(
+        self,
+        shards: Union[str, List[str]],
+        genomic_feature_dirs: Union[Dict[str, str], List[str]],
+        *,
+        feat_key: str = "feats",
+        h5_cache_items: int = 32,
+        **kwargs,
+    ):
+        super().__init__(shards, **kwargs)
+        self.genomic_feature_dirs = genomic_feature_dirs
+        self.feat_key = feat_key
+        self.cache = H5GenomicCache(max_open=h5_cache_items, feat_key=feat_key)
+        self._h5_path_cache: Dict[tuple, Optional[str]] = {}
+
+    def pipeline(self):
+        base = super().pipeline()
+        return base.map(self._add_genomic_features, handler=wds.handlers.warn_and_continue)
+
+    def _add_genomic_features(self, sample):
+        cohort = sample["cohort"]
+        patient = sample["patient"]
+
+        h5_path = self._find_h5_path_for_patient(cohort, patient)
+        if h5_path is None:
+            raise FileNotFoundError(
+                f"No genomic H5 for cohort={cohort} patient={patient}"
+            )
+
+        feat = self.cache.get(h5_path)  # numpy (D,)
+        sample["feat"] = torch.from_numpy(feat).float()
+        return sample
+
+    # ------ path resolution (same pattern as WDSTilesWithFeatures) ------
+
+    def _resolve_feat_dir(self, cohort: str) -> Optional[str]:
+        if isinstance(self.genomic_feature_dirs, dict):
+            return self.genomic_feature_dirs.get(cohort)
+        for d in self.genomic_feature_dirs:
+            if cohort in d:
+                return d
+        return None
+
+    def _find_h5_path_for_patient(self, cohort: str, patient: str) -> Optional[str]:
+        key = (cohort, patient)
+        if key in self._h5_path_cache:
+            return self._h5_path_cache[key]
+
+        feat_dir = self._resolve_feat_dir(cohort)
+        if feat_dir is None:
+            self._h5_path_cache[key] = None
+            return None
+
+        candidates = [patient, _strip_trailing_hash(patient)]
+        seen: set = set()
+        candidates = [c for c in candidates if not (c in seen or seen.add(c))]
+
+        for name in candidates:
+            path = os.path.join(feat_dir, f"{name}.h5")
+            if os.path.exists(path):
+                self._h5_path_cache[key] = path
+                return path
+
+        self._h5_path_cache[key] = None
+        return None
+
 
 def _strip_trailing_hash(patient):
     """Strip trailing .<hash> from patient ID if necessary.

@@ -13,14 +13,14 @@ from typing import NamedTuple, Tuple
 from dataclasses import dataclass
 
 import torch as th
-from torch.amp import autocast
+from torch.amp import autocast  # type: ignore[attr-defined]
 import torch.nn.functional as F
 
-from mopadi.model import *
+from mopadi.model import *  # type: ignore[reportWildcardImportFromLibrary]
 from mopadi.model.nn import mean_flat
 from mopadi.model.unet_autoenc import AutoencReturn
 from mopadi.configs.config_base import BaseConfig
-from mopadi.configs.choices import *
+from mopadi.configs.choices import *  # type: ignore[reportWildcardImportFromLibrary]
 
 
 @dataclass
@@ -106,7 +106,7 @@ class GaussianDiffusionBeatGans:
                         cond: th.Tensor,
                         t: th.Tensor,
                         model_kwargs=None,
-                        noise: th.Tensor = None):
+                        noise: th.Tensor = None):  # type: ignore[assignment]
         """
         Compute training losses for a single timestep.
 
@@ -146,7 +146,7 @@ class GaussianDiffusionBeatGans:
             )
             # get the pred xstart
             p_mean_var = self.p_mean_variance(
-                model=DummyModel(pred=_model_output),
+                model=DummyModel(pred=_model_output),  # type: ignore[arg-type]
                 # gradient goes through x_t
                 x=x_t, t=t, clip_denoised=False
                 )
@@ -183,19 +183,24 @@ class GaussianDiffusionBeatGans:
 
             # Feature Loss - compare features from the original & reconstructed image
             if self.conf.feat_loss:
-                pred_xstart_denorm = ((terms['pred_xstart'] + 1) / 2).clamp(0, 1)
                 extractor = getattr(model, "feat_extractor", None)
                 assert extractor is not None, "feat_extractor missing on model"
-                feats_recon = extractor.extract_feats(pred_xstart_denorm, need_grad=True)
 
-                #feature_loss = nn.MSELoss()(feats_recon, cond)
-                feature_loss = cosine_similarity_loss(feats_recon, cond)
-                terms["feature_loss"] = feature_loss
+                # Genomic features cannot be re-extracted from images, so skip feature loss
+                if not getattr(extractor, 'supports_image_extraction', True):
+                    pass  # feature loss is not applicable for genomic conditioning
+                else:
+                    pred_xstart_denorm = ((terms['pred_xstart'] + 1) / 2).clamp(0, 1)
+                    feats_recon = extractor.extract_feats(pred_xstart_denorm, need_grad=True)
 
-                #print(f"Base loss: {base_loss.mean().item()}, Feature loss: {feature_loss.mean().item()}")
-                total_loss += self.conf.lambda_feat * feature_loss
+                    #feature_loss = nn.MSELoss()(feats_recon, cond)
+                    feature_loss = cosine_similarity_loss(feats_recon, cond)
+                    terms["feature_loss"] = feature_loss
 
-                terms["loss"] = total_loss
+                    #print(f"Base loss: {base_loss.mean().item()}, Feature loss: {feature_loss.mean().item()}")
+                    total_loss += self.conf.lambda_feat * feature_loss
+
+                    terms["loss"] = total_loss
 
             #elif self.conf.lpips_loss:
             #    lpips_loss_fn = lpips.LPIPS(net='alex').to(device)
@@ -387,12 +392,12 @@ class GaussianDiffusionBeatGans:
         else:
             raise NotImplementedError(self.model_mean_type)
 
-        assert (model_mean.shape == model_log_variance.shape ==
+        assert (model_mean.shape == model_log_variance.shape ==  # type: ignore[possibly-undefined]
                 pred_xstart.shape == x.shape)
         return {
             "mean": model_mean,
-            "variance": model_variance,
-            "log_variance": model_log_variance,
+            "variance": model_variance,  # type: ignore[possibly-undefined]
+            "log_variance": model_log_variance,  # type: ignore[possibly-undefined]
             "pred_xstart": pred_xstart,
             'model_forward': model_forward,
         }
@@ -446,7 +451,7 @@ class GaussianDiffusionBeatGans:
 
         This uses the conditioning strategy from Sohl-Dickstein et al. (2015).
         """
-        gradient = cond_fn(x, self._scale_timesteps(t), **model_kwargs)
+        gradient = cond_fn(x, self._scale_timesteps(t), **model_kwargs)  # type: ignore[misc]
         new_mean = (p_mean_var["mean"].float() +
                     p_mean_var["variance"] * gradient.float())
         return new_mean
@@ -465,7 +470,7 @@ class GaussianDiffusionBeatGans:
 
         eps = self._predict_eps_from_xstart(x, t, p_mean_var["pred_xstart"])
         eps = eps - (1 - alpha_bar).sqrt() * cond_fn(
-            x, self._scale_timesteps(t), **model_kwargs)
+            x, self._scale_timesteps(t), **model_kwargs)  # type: ignore[misc]
 
         out = p_mean_var.copy()
         out["pred_xstart"] = self._predict_xstart_from_eps(x, t, eps)
@@ -565,7 +570,7 @@ class GaussianDiffusionBeatGans:
                 progress=progress,
         ):
             final = sample
-        return final["sample"]
+        return final["sample"]  # type: ignore[index]
 
     def p_sample_loop_progressive(
         self,
@@ -782,7 +787,7 @@ class GaussianDiffusionBeatGans:
                 eta=eta,
         ):
             final = sample
-        return final["sample"]
+        return final["sample"]  # type: ignore[index]
 
     def ddim_sample_loop_progressive(
         self,

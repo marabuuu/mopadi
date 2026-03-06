@@ -17,11 +17,12 @@ from torch import distributed
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torchmetrics.image import MultiScaleStructuralSimilarityIndexMeasure
+from typing import cast, Any
 
 from mopadi.utils.misc import render_condition
-from mopadi.configs.config import *
+from mopadi.configs.config import *  # type: ignore[reportWildcardImportFromLibrary]
 from mopadi.diffusion import Sampler
-from mopadi.utils.dist_utils import *
+from mopadi.utils.dist_utils import *  # type: ignore[reportWildcardImportFromLibrary]
 from mopadi.utils.ssim import ssim
 
 
@@ -41,18 +42,21 @@ def make_subset_loader(conf: TrainConfig,
 
     # for WebDataset / IterableDataset
     if isinstance(dataset, IterableDataset):
-        # Prefer using the dataset's own WebLoader to keep the pipeline intact.
-        steps = max(1, math.ceil(conf.eval_num_images / batch_size))
-        # Note: shuffle is handled inside the WebDataset pipeline; DataLoader shuffle must stay False.
-        return dataset.to_loader(
+        # Use DataLoader for IterableDataset
+        return DataLoader(
+            dataset,
             batch_size=batch_size,
             num_workers=conf.num_workers,
-            steps_per_epoch=steps,   # this limits to ~eval_num_images
         )
 
     # for Map-style dataset
     # Cap the requested size by the dataset length
-    size = min(conf.eval_num_images, len(dataset))
+    try:
+        # dataset may be an IterableDataset without __len__; ignore typing warning
+        dataset_len = len(dataset)  # type: ignore[arg-type]
+    except TypeError:
+        dataset_len = conf.eval_num_images
+    size = min(conf.eval_num_images, dataset_len)  # type: ignore[assignment]
     subset = SubsetDataset(dataset, size=size)
 
     if parallel and distributed.is_initialized():
@@ -91,7 +95,7 @@ def evaluate_lpips(
     lpips_fn_alex = lpips.LPIPS(net='alex').to(device)
     val_loader = make_subset_loader(conf,
                                     dataset=val_data,
-                                    batch_size=conf.batch_size_eval,
+                                    batch_size=conf.batch_size_eval,  # type: ignore[arg-type]
                                     shuffle=False,
                                     parallel=True)
 
@@ -120,25 +124,33 @@ def evaluate_lpips(
             else:
                 x_T = torch.randn((len(imgs), 3, conf.img_size, conf.img_size), device=device)
 
-            pred_imgs = render_condition(conf=conf,
-                                         model=model,
-                                         x_T=x_T,
-                                         cond=cond,
-                                         sampler=sampler)
+            # model is declared generic, but render_condition expects the BeatGANsAutoencModel
+            pred_imgs = render_condition(
+                conf=conf,
+                model=cast(Any, model),  # type: ignore[arg-type]
+                x_T=x_T,
+                cond=cond,
+                sampler=sampler,
+            )
 
-            scores['lpips_alex'].append(lpips_fn_alex.forward(imgs, pred_imgs).view(-1))
+            # cast to tensor so the type checker knows result supports .view()
+            lpips_out = torch.as_tensor(lpips_fn_alex.forward(imgs, pred_imgs))
+            scores['lpips_alex'].append(lpips_out.view(-1))  # type: ignore[call-overload]
 
             norm_pred_imgs = (pred_imgs + 1) / 2   # converts from [-1,1] → [0,1]
-            recon_feats = model.feat_extractor.extract_feats(norm_pred_imgs)
 
-            lpips_custom = torch.nn.functional.mse_loss(cond, recon_feats, reduction='none').mean(dim=1)
-            scores['fm_mse'].append(lpips_custom)
+            # Genomic features cannot be re-extracted from images
+            # guarded access to extractor which may be None
+            if getattr(model.feat_extractor, 'supports_image_extraction', True):
+                recon_feats = model.feat_extractor.extract_feats(norm_pred_imgs)  # type: ignore[attr-defined]
+                lpips_custom = torch.nn.functional.mse_loss(cond, recon_feats, reduction='none').mean(dim=1)
+                scores['fm_mse'].append(lpips_custom)  # type: ignore[arg-type]
 
             norm_imgs = (imgs + 1) / 2
             
             # (n, )
             scores['ssim'].append(
-                ssim(norm_imgs, norm_pred_imgs, size_average=False))
+                ssim(norm_imgs, norm_pred_imgs, size_average=False))  # type: ignore[arg-type]
             # (n, )
             scores['mse'].append(
                 (norm_imgs - norm_pred_imgs).pow(2).mean(dim=[1, 2, 3]))
@@ -147,7 +159,8 @@ def evaluate_lpips(
 
         # (N, )
         for key in scores.keys():
-            scores[key] = torch.cat(scores[key]).float()
+            # scores[key] is list[Tensor]; the type checker thinks it is list[Any]
+            scores[key] = torch.cat(scores[key]).float()  # type: ignore[assignment]
     model.train()
 
     barrier()
@@ -165,7 +178,8 @@ def evaluate_lpips(
 
     # final scores
     for key in scores.keys():
-        scores[key] = torch.cat(outs[key]).mean().item()
+        # result is float; dict originally held list entries
+        scores[key] = torch.cat(outs[key]).mean().item()  # type: ignore[assignment]
 
     return scores
 
@@ -194,13 +208,14 @@ def evaluate_fid(
 ):
     assert conf.fid_cache is not None
     gen_dir = os.path.join(conf.work_cache_dir, conf.base_dir.split('/')[-1], 'gen_from_noise_and_cond')
+    cache_dir = f'{conf.fid_cache}_{conf.eval_num_images}'  # may be overwritten below
 
     if get_rank() == 0:
         # no parallel
         # validation data for a comparing FID
         val_loader = make_subset_loader(conf,
                                         dataset=val_data,
-                                        batch_size=conf.batch_size_eval,
+                                        batch_size=conf.batch_size_eval,  # type: ignore[arg-type]
                                         shuffle=False,
                                         parallel=False)
 
@@ -251,7 +266,7 @@ def evaluate_fid(
                     device=device)
                 batch_images = render_condition(
                     conf=conf,
-                    model=model,
+                    model=cast(Any, model),
                     x_T=x_T,
                     cond=cond,
                     sampler=sampler).cpu()
@@ -270,8 +285,11 @@ def evaluate_fid(
 
     barrier()
 
+    fid = torch.tensor(0., device=device)
+    fid_value: float = 0.
+
     if get_rank() == 0:
-        fid = fid_score.calculate_fid_given_paths(
+        fid_value = fid_score.calculate_fid_given_paths(
             [cache_dir, gen_dir],
             batch_size,
             device=device,
@@ -285,7 +303,7 @@ def evaluate_fid(
 
     if get_rank() == 0:
         # need to float it! unless the broadcasted value is wrong
-        fid = torch.tensor(float(fid), device=device)
+        fid = torch.tensor(float(fid_value), device=device)
         broadcast(fid, 0)
     else:
         fid = torch.tensor(0., device=device)

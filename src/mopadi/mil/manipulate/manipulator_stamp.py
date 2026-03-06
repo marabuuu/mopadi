@@ -5,9 +5,9 @@ from skimage.metrics import structural_similarity, mean_squared_error
 import cv2
 from pathlib import Path
 
-from mopadi.configs.templates import *
-from mopadi.configs.templates_cls import *
-from mopadi.mil.utils import *
+from mopadi.configs.templates import *  # type: ignore[reportWildcardImportFromLibrary]
+from mopadi.configs.templates_cls import *  # type: ignore[reportWildcardImportFromLibrary]
+from mopadi.mil.utils import *  # type: ignore[reportWildcardImportFromLibrary]
 from mopadi.model.extractor import (
     FeatureExtractorConch, FeatureExtractorConch15,
     FeatureExtractorVirchow2, FeatureExtractorUNI2
@@ -41,7 +41,7 @@ class ImageManipulatorSTAMP:
         return model
     
     def _load_cls_model(self, mil_path):
-        from stamp.modeling.models.vision_tranformer import VisionTransformer
+        from stamp.modeling.models.vision_tranformer import VisionTransformer  # type: ignore[import-not-found]
 
         ckpt = torch.load(mil_path,  weights_only=False, map_location="cpu")
 
@@ -189,8 +189,8 @@ class ImageManipulatorSTAMP:
                         num_top_tiles=15,
                         ):
 
-        target_class = next(cls for cls in target_dict if cls != patient_class)
-        target_cls_id = target_dict[target_class]
+        target_class = next(cls for cls in target_dict if cls != patient_class)  # type: ignore[arg-type]
+        target_cls_id = target_dict[target_class]  # type: ignore[index]
 
         if patient_features is None:
             try:
@@ -202,7 +202,7 @@ class ImageManipulatorSTAMP:
                 print(f"Exception occurred while getting patient features: {e}")
                 return
     
-        top_tiles = stamp_top_tiles(model=self.classifier, feats=patient_features, coords=coords, topk=num_top_tiles, device=self.device)
+        top_tiles = stamp_top_tiles(model=self.classifier, feats=patient_features, coords=coords, topk=num_top_tiles, device=self.device)  # type: ignore[possibly-undefined]
         top_tiles = top_tiles['topk_idx']
 
         for man_amp in tqdm(man_amps, desc="Manipulating at different amplitudes"):
@@ -211,13 +211,13 @@ class ImageManipulatorSTAMP:
                 idx = int(top_idx.item())
                 top_tile_feats_manip = self.manipulate_latent_feats_stamp_tile_level(vit_model=self.classifier,
                                                                                 feats=patient_features,
-                                                                                coords=coords,
+                                                                                coords=coords,  # type: ignore[possibly-undefined]
                                                                                 tile_indices=[idx],
                                                                                 man_amp=man_amp, 
                                                                                 cls_id=target_cls_id)
 
                 single_tile_feats_manip = top_tile_feats_manip[idx].unsqueeze(0).unsqueeze(0)
-                single_tile_coords = coords[idx].unsqueeze(0).unsqueeze(0)
+                single_tile_coords = coords[idx].unsqueeze(0).unsqueeze(0)  # type: ignore[possibly-undefined]
 
                 # original (pre-manipulation)
                 orig_tile_feats = patient_features[idx].unsqueeze(0).unsqueeze(0)
@@ -228,8 +228,8 @@ class ImageManipulatorSTAMP:
                 pred_manipulated = torch.softmax(logits_manipulated, dim=1)
 
                 try:
-                    tile_path = fnames[idx]
-                    fname = os.path.basename(fnames[idx]).split(".png")[0]
+                    tile_path = fnames[idx]  # type: ignore[possibly-undefined]
+                    fname = os.path.basename(fnames[idx]).split(".png")[0]  # type: ignore[possibly-undefined]
                 except IndexError:
                     print(f"Features for the top tile {top_idx.item()} for patient {patient_name} not found. Patient has {patient_features.size()} features.")
                     continue
@@ -237,7 +237,7 @@ class ImageManipulatorSTAMP:
                 out_dir = os.path.join(save_path, os.path.basename(fname).split(".png")[0])
                 Path(out_dir).mkdir(parents=True, exist_ok=True)
 
-                inverted_target_dict = {v: k for k, v in target_dict.items()}
+                inverted_target_dict = {v: k for k, v in target_dict.items()}  # type: ignore[union-attr]
 
                 with open(os.path.join(out_dir, "predictions.txt"), "a") as f:
                     f.write(f"Original tile-level prediction ({inverted_target_dict[0]}, {inverted_target_dict[1]}): {[f'{p:.3f}' for p in pred_original.squeeze().detach().cpu().numpy()]}\n")
@@ -260,18 +260,24 @@ class ImageManipulatorSTAMP:
                 self.save_image(manipulated_img_rgb, save_manip_path)
 
                 # make predictions for the manipulated rendered image
-                img_feats = self.model.feat_extractor.extract_feats(manipulated_img.to(self.device), need_grad=False)
-                logits = self.classifier(
-                    img_feats.clone().unsqueeze(0),          # [1,1,F]
-                    coords=single_tile_coords,        # [1,1,2]
-                    mask=None,
-                )
-                pred_rendered = torch.softmax(logits, dim=1)
+                if getattr(self.model.feat_extractor, 'supports_image_extraction', True):
+                    img_feats = self.model.feat_extractor.extract_feats(manipulated_img.to(self.device), need_grad=False)  # type: ignore[union-attr]
+                    logits = self.classifier(
+                        img_feats.clone().unsqueeze(0),          # [1,1,F]
+                        coords=single_tile_coords,        # [1,1,2]
+                        mask=None,
+                    )
+                    pred_rendered = torch.softmax(logits, dim=1)
+                else:
+                    pred_rendered = None
 
                 with open(os.path.join(out_dir, "predictions.txt"), "a") as f:
                     f.write(f"Manipulation amplitude: {man_amp}\n")  
                     f.write(f"Pred manip feat ({inverted_target_dict[0]}, {inverted_target_dict[1]}): {[f'{p:.3f}' for p in pred_manipulated.detach().squeeze().cpu().numpy()]}\n")
-                    f.write(f"Pred rendered img ({inverted_target_dict[0]}, {inverted_target_dict[1]}): {[f'{p:.3f}' for p in pred_rendered.detach().squeeze().cpu().numpy()]}\n")
+                    if pred_rendered is not None:
+                        f.write(f"Pred rendered img ({inverted_target_dict[0]}, {inverted_target_dict[1]}): {[f'{p:.3f}' for p in pred_rendered.detach().squeeze().cpu().numpy()]}\n")
+                    else:
+                        f.write(f"Pred rendered img: N/A (genomic features - no image re-encoding)\n")
                     f.write(f"--------------------------------------------------\n")
 
 
@@ -308,7 +314,7 @@ def compute_structural_similarity(reconstructed_img, image_original, out_file_di
     #print(f"Shape of the reconstructed image: {reconstructed_img_np.shape}, and range: [{reconstructed_img_np.min()}, {reconstructed_img_np.max()}]")
 
     # SSIM
-    (ssim, diff) = structural_similarity(image_original_np, reconstructed_img_np, full=True, data_range=image_original_np.max() - image_original_np.min(), multichannel = True, channel_axis = 2)
+    (ssim, diff) = structural_similarity(image_original_np, reconstructed_img_np, full=True, data_range=image_original_np.max() - image_original_np.min(), multichannel = True, channel_axis = 2)  # type: ignore[misc]
     print("Image Similarity: {:.3f}%".format(ssim * 100))
     diff = (diff * 255).astype("uint8")
     diff_gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)

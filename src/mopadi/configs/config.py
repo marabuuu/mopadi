@@ -4,22 +4,22 @@
 # License: MIT
 
 import os
-from typing import Tuple
+from typing import List, Optional, Tuple, Union
 from multiprocessing import get_context
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import glob
 
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import DataLoader
 
 from mopadi.configs.config_base import BaseConfig
-from mopadi.dataset import *
-from mopadi.diffusion import *
+from mopadi.dataset import *  # type: ignore[reportWildcardImportFromLibrary]
+from mopadi.diffusion import *  # type: ignore[reportWildcardImportFromLibrary]
 from mopadi.diffusion.base import GenerativeType, LossType, ModelMeanType, ModelVarType, get_named_beta_schedule
-from mopadi.model import *
-from mopadi.configs.choices import *
+from mopadi.model import *  # type: ignore[reportWildcardImportFromLibrary]
+from mopadi.configs.choices import *  # type: ignore[reportWildcardImportFromLibrary]
 from mopadi.model.unet import ScaleAt
-from mopadi.model.extractor import *
+from mopadi.model.extractor import *  # type: ignore[reportWildcardImportFromLibrary]
 from mopadi.diffusion.resample import UniformSampler
 from mopadi.diffusion.diffusion import space_timesteps
 
@@ -32,7 +32,7 @@ class PretrainConfig(BaseConfig):
 @dataclass
 class MILconfig(BaseConfig):
     target_label: str = ""
-    target_dict: dict = None
+    target_dict: Optional[dict] = None
     dim: int = 512
     num_heads: int = 8
     num_seeds: int = 4
@@ -56,15 +56,15 @@ class TrainConfig(BaseConfig):
     train_interpolate_prob: float = 0
     train_interpolate_img: bool = False
     manipulate_mode: str = ''
-    manipulate_cls: str = None
-    manipulate_shots: int = None
+    manipulate_cls: Optional[str] = None
+    manipulate_shots: Optional[int] = None
     manipulate_loss: ManipulateLossType = ManipulateLossType.bce
     manipulate_znormalize: bool = False
     manipulate_seed: int = 0
     accum_batches: int = 1
     autoenc_mid_attn: bool = True
     batch_size: int = 16
-    batch_size_eval: int = None
+    batch_size_eval: Optional[int] = None
     beatgans_gen_type: GenerativeType = GenerativeType.ddim
     beatgans_loss_type: LossType = LossType.mse
     feat_loss: bool = False
@@ -76,8 +76,8 @@ class TrainConfig(BaseConfig):
     latent_znormalize: bool = False
     beta_scheduler: str = 'linear'
     data_name: str = ''
-    data_val_name: str = None
-    diffusion_type: str = None
+    data_val_name: Optional[str] = None
+    diffusion_type: Optional[str] = None
     dropout: float = 0.1
     ema_decay: float = 0.9999
     eval_num_images: int = 5_000
@@ -90,10 +90,10 @@ class TrainConfig(BaseConfig):
     lr: float = 0.0001  # 0.0001 default (adam); 3-10x smaller for lion optimizer
     optimizer: OptimizerType = OptimizerType.adam  #adam or adamw or lion
     weight_decay: float = 0  # default - 0; lion - 3-10x larger than that for AdamW
-    model_conf: ModelConfig = None
-    model_name: ModelName = None
-    model_type: ModelType = None
-    net_attn: Tuple[int] = None
+    model_conf: Optional[ModelConfig] = None
+    model_name: Optional[ModelName] = None
+    model_type: Optional[ModelType] = None
+    net_attn: Optional[Tuple[int]] = None
     net_beatgans_attn_head: int = 1
     # not necessarily the same as the the number of style channels
     net_beatgans_embed_channels: int = 512 # conch v1.5 = 768
@@ -107,13 +107,13 @@ class TrainConfig(BaseConfig):
     net_beatgans_resnet_two_cond: bool = False
     net_beatgans_resnet_use_zero_module: bool = True
     net_beatgans_resnet_scale_at: ScaleAt = ScaleAt.after_norm
-    net_beatgans_resnet_cond_channels: int = None
-    net_ch_mult: Tuple[int] = None
+    net_beatgans_resnet_cond_channels: Optional[int] = None
+    net_ch_mult: Optional[Tuple[int]] = None
     net_ch: int = 64
     net_autoenc_stochastic: bool = False
     net_num_res_blocks: int = 2
     # number of resblocks for the UNET
-    net_num_input_res_blocks: int = None
+    net_num_input_res_blocks: Optional[int] = None
     num_workers: int = 6 # 20 for dgx
     parallel: bool = False
     postfix: str = ''
@@ -127,11 +127,11 @@ class TrainConfig(BaseConfig):
     total_samples: int = 10_000_000
     steps_per_epoch: int = 5_000
     warmup: int = 0
-    pretrain: PretrainConfig = None
-    continue_from: PretrainConfig = None
-    eval_programs: Tuple[str] = None
+    pretrain: Optional[PretrainConfig] = None
+    continue_from: Optional[PretrainConfig] = None
+    eval_programs: Optional[Tuple[str]] = None
     # if present load the checkpoint from this path instead
-    eval_path: str = None
+    eval_path: Optional[str] = None
     base_dir: str = 'checkpoints'
     use_cache_dataset: bool = False
     data_cache_dir: str = 'cache'
@@ -139,6 +139,18 @@ class TrainConfig(BaseConfig):
     load_pretrained_autoenc: bool = False
     # to be overridden
     name: str = ''
+    # Data directories & transform settings (set by templates / YAML config)
+    data_dirs: List[str] = field(default_factory=list)
+    feature_dirs: List[str] = field(default_factory=list)
+    do_resize: bool = False
+    do_normalize: bool = True
+    as_tensor: bool = True
+    max_tiles_per_patient: Optional[int] = None
+    cohort_size_threshold: Optional[int] = None
+    # Legacy attributes used by non-WebDataset paths (set by templates)
+    data_path: Optional[Union[str, List[str]]] = None
+    feat_path: Optional[Union[str, List[str]]] = None
+    test_patient_file: Optional[str] = None
 
 
     def __post_init__(self):
@@ -184,14 +196,14 @@ class TrainConfig(BaseConfig):
 
             diffusion_conf = SpacedDiffusionBeatGansConfig(
                 gen_type=self.beatgans_gen_type,
-                model_type=self.model_type,
-                betas=get_named_beta_schedule(self.beta_scheduler, self.T),
+                model_type=self.model_type,  # type: ignore[arg-type]
+                betas=get_named_beta_schedule(self.beta_scheduler, self.T),  # type: ignore[arg-type]
                 model_mean_type=self.beatgans_model_mean_type,
                 model_var_type=self.beatgans_model_var_type,
                 loss_type=self.beatgans_loss_type,
                 rescale_timesteps=self.beatgans_rescale_timesteps,
                 use_timesteps=space_timesteps(num_timesteps=self.T,
-                                              section_counts=section_counts),
+                                              section_counts=section_counts),  # type: ignore[arg-type]
                 fp16=self.fp16,
                 feat_loss=self.feat_loss,
                 lambda_feat=self.lambda_feat
@@ -219,41 +231,51 @@ class TrainConfig(BaseConfig):
     def make_dataset(self, use_web_dataset=True, **kwargs):
         urls = expand_shards(self.data_dirs)
         if use_web_dataset:
+            if self.feat_extractor == 'genomic':
+                return WDSTilesWithGenomicFeatures(
+                    shards=urls,
+                    genomic_feature_dirs=self.feature_dirs,
+                    do_normalize=self.do_normalize,
+                    do_resize=self.do_resize,
+                    img_size=self.img_size,
+                    feat_extractor=self.feat_extractor,
+                )
             return WDSTilesWithFeatures(
                 shards=urls,
                 feature_dirs=self.feature_dirs,
                 do_normalize=self.do_normalize,
                 do_resize=self.do_resize,
+                img_size=self.img_size,
                 feat_extractor=self.feat_extractor,
             )
         else:
             if self.data_name == 'tcga_crc_512_conch_nolmdb' or self.data_name == 'tcga_brca_512_conch_nolmdb':
-                return ImageTileDatasetWithFeatures(root_dirs=[self.data_path], features_dirs=self.feat_path, test_patients_file=self.test_patient_file, feat_extractor='conch', **kwargs)
+                return ImageTileDatasetWithFeatures(root_dirs=[self.data_path], feature_dirs=self.feat_path, test_patients_file_path=self.test_patient_file, feat_extractor='conch', **kwargs)  # type: ignore[arg-type]
             elif self.data_name == 'tcga_all_conch':
-                return ImageTileDatasetWithFeatures(root_dirs=self.data_path, features_dirs=self.feat_path, test_patients_file=None, feat_extractor='conch', cache_pickle_tiles_path='temp/tcga_all_tile_paths_all.pkl', **kwargs)
+                return ImageTileDatasetWithFeatures(root_dirs=self.data_path, feature_dirs=self.feat_path, test_patients_file_path=None, feat_extractor='conch', cache_pickle_tiles_path='temp/tcga_all_tile_paths_all.pkl', **kwargs)  # type: ignore[arg-type]
             elif self.data_name == 'tcga_all_conch_sample_1024':
-                return ImageTileDatasetWithFeatures(root_dirs=self.data_path, features_dirs=self.feat_path, test_patients_file=None, max_tiles_per_patient=1024, feat_extractor='conch', cache_pickle_tiles_path='temp/tcga_all_tile_paths_sampled_1024.pkl', **kwargs)
+                return ImageTileDatasetWithFeatures(root_dirs=self.data_path, feature_dirs=self.feat_path, test_patients_file_path=None, max_tiles_per_patient=1024, feat_extractor='conch', cache_pickle_tiles_path='temp/tcga_all_tile_paths_sampled_1024.pkl', **kwargs)  # type: ignore[arg-type]
             elif self.data_name == 'tcga_crc_224_v2':
-                return ImageTileDatasetWithFeatures(root_dirs=[self.data_path], features_dirs=[self.feat_path], test_patients_file=None, max_tiles_per_patient=None, feat_extractor='v2', cache_pickle_tiles_path='temp/tcga_crc.pkl', **kwargs)
+                return ImageTileDatasetWithFeatures(root_dirs=[self.data_path], feature_dirs=[self.feat_path], test_patients_file_path=None, max_tiles_per_patient=None, feat_extractor='v2', cache_pickle_tiles_path='temp/tcga_crc.pkl', **kwargs)
             elif self.data_name == 'tcga_crc_448_conch1_5':
-                return ImageTileDatasetWithFeatures(root_dirs=[self.data_path], features_dirs=[self.feat_path], test_patients_file=None, max_tiles_per_patient=None, feat_extractor='conch1_5', cache_pickle_tiles_path='temp/tcga_crc.pkl', **kwargs)
+                return ImageTileDatasetWithFeatures(root_dirs=[self.data_path], feature_dirs=[self.feat_path], test_patients_file_path=None, max_tiles_per_patient=None, feat_extractor='conch1_5', cache_pickle_tiles_path='temp/tcga_crc.pkl', **kwargs)
             elif self.data_name == 'tcga_crc_448_conch':
-                return ImageTileDatasetWithFeatures(root_dirs=[self.data_path], features_dirs=[self.feat_path], test_patients_file=None, max_tiles_per_patient=None, feat_extractor='conch', cache_pickle_tiles_path='temp/tcga_crc.pkl', **kwargs)
+                return ImageTileDatasetWithFeatures(root_dirs=[self.data_path], feature_dirs=[self.feat_path], test_patients_file_path=None, max_tiles_per_patient=None, feat_extractor='conch', cache_pickle_tiles_path='temp/tcga_crc.pkl', **kwargs)
             elif self.data_name == 'tcga_crc_224_uni2':
-                return ImageTileDatasetWithFeatures(root_dirs=[self.data_path], features_dirs=[self.feat_path], test_patients_file=None, max_tiles_per_patient=None, feat_extractor='uni2', cache_pickle_tiles_path='temp/tcga_crc.pkl', **kwargs)
+                return ImageTileDatasetWithFeatures(root_dirs=[self.data_path], feature_dirs=[self.feat_path], test_patients_file_path=None, max_tiles_per_patient=None, feat_extractor='uni2', cache_pickle_tiles_path='temp/tcga_crc.pkl', **kwargs)
 
 
     def make_loader(
         self,
         dataset,
         shuffle: bool = False,   # ignored for WebDataset; shuffling happens inside the pipeline
-        num_worker: int = None,  # <-- int, not bool
+        num_worker: Optional[int] = None,
         drop_last: bool = True,
-        batch_size: int = None,
+        batch_size: Optional[int] = None,
         parallel: bool = False,
         sampler=None,            # ignored for WebDataset
     ):
-        if isinstance(dataset, (WDSTiles, WDSTilesWithFeatures)):
+        if isinstance(dataset, (WDSTiles, WDSTilesWithFeatures, WDSTilesWithGenomicFeatures)):
             return dataset.to_loader(
                 batch_size=batch_size or self.batch_size,
                 num_workers=num_worker or self.num_workers,
@@ -281,8 +303,8 @@ class TrainConfig(BaseConfig):
         if self.model_name == ModelName.beatgans_ddpm:
             self.model_type = ModelType.ddpm
             self.model_conf = BeatGANsUNetConfig(
-                attention_resolutions=self.net_attn,
-                channel_mult=self.net_ch_mult,
+                attention_resolutions=self.net_attn,  # type: ignore[arg-type]
+                channel_mult=self.net_ch_mult,  # type: ignore[arg-type]
                 conv_resample=True,
                 dims=2,
                 dropout=self.dropout,
@@ -294,7 +316,7 @@ class TrainConfig(BaseConfig):
                 num_heads_upsample=-1,
                 num_heads=self.net_beatgans_attn_head,
                 num_res_blocks=self.net_num_res_blocks,
-                num_input_res_blocks=self.net_num_input_res_blocks,
+                num_input_res_blocks=self.net_num_input_res_blocks,  # type: ignore[arg-type]
                 out_channels=self.model_out_channels,
                 resblock_updown=self.net_resblock_updown,
                 use_checkpoint=self.net_beatgans_gradient_checkpoint,
@@ -314,8 +336,8 @@ class TrainConfig(BaseConfig):
                 raise NotImplementedError()
 
             self.model_conf = cls(
-                attention_resolutions=self.net_attn,
-                channel_mult=self.net_ch_mult,
+                attention_resolutions=self.net_attn,  # type: ignore[arg-type]
+                channel_mult=self.net_ch_mult,  # type: ignore[arg-type]
                 conv_resample=True,
                 dims=2,
                 dropout=self.dropout,
@@ -327,7 +349,7 @@ class TrainConfig(BaseConfig):
                 num_heads_upsample=-1,
                 num_heads=self.net_beatgans_attn_head,
                 num_res_blocks=self.net_num_res_blocks,
-                num_input_res_blocks=self.net_num_input_res_blocks,
+                num_input_res_blocks=self.net_num_input_res_blocks,  # type: ignore[arg-type]
                 out_channels=self.model_out_channels,
                 resblock_updown=self.net_resblock_updown,
                 use_checkpoint=self.net_beatgans_gradient_checkpoint,
@@ -335,7 +357,7 @@ class TrainConfig(BaseConfig):
                 resnet_two_cond=self.net_beatgans_resnet_two_cond,
                 resnet_use_zero_module=self.
                 net_beatgans_resnet_use_zero_module,
-                resnet_cond_channels=self.net_beatgans_resnet_cond_channels,
+                resnet_cond_channels=self.net_beatgans_resnet_cond_channels,  # type: ignore[arg-type]
             )
         else:
             raise NotImplementedError(self.model_name)
