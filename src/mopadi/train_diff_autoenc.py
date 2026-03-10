@@ -166,40 +166,46 @@ class LitModel(pl.LightningModule):
 
         if self.global_rank == 0:
             if not self.conf.load_pretrained_autoenc:
-                print("\n=== LIGHT SANITY CHECK (single shard, no shuffle) ===")
-                shard_urls = expand_shards(self.conf.data_dirs)
-                one_shard = shard_urls[0]
+                print("\n=== LIGHT SANITY CHECK ===")
 
-                if self.conf.feat_extractor == 'genomic':
-                    mini_ds = WDSTilesWithGenomicFeatures(
-                        shards=one_shard,
-                        genomic_feature_dirs=self.conf.feature_dirs,
-                        feat_extractor=self.conf.feat_extractor,
-                        do_resize=self.conf.do_resize,
-                        img_size=self.conf.img_size,
-                        do_normalize=self.conf.do_normalize,
-                        pre_shuffle=0,
-                        post_shuffle=0,
-                        h5_cache_items=1,
+                if self.conf.use_web_dataset:
+                    shard_urls = expand_shards(self.conf.data_dirs)
+                    one_shard = shard_urls[0]
+
+                    if self.conf.feat_extractor == 'genomic':
+                        mini_ds = WDSTilesWithGenomicFeatures(
+                            shards=one_shard,
+                            genomic_feature_dirs=self.conf.feature_dirs,
+                            feat_extractor=self.conf.feat_extractor,
+                            do_resize=self.conf.do_resize,
+                            img_size=self.conf.img_size,
+                            do_normalize=self.conf.do_normalize,
+                            pre_shuffle=0,
+                            post_shuffle=0,
+                            h5_cache_items=1,
+                        )
+                    else:
+                        mini_ds = WDSTilesWithFeatures(
+                            shards=one_shard,
+                            feature_dirs=self.conf.feature_dirs,
+                            feat_extractor=self.conf.feat_extractor,
+                            do_resize=self.conf.do_resize,
+                            img_size=self.conf.img_size,
+                            do_normalize=self.conf.do_normalize,
+                            pre_shuffle=0,
+                            post_shuffle=0,
+                            h5_cache_items=1,
+                        )
+
+                    mini_loader = mini_ds.to_loader(
+                        batch_size=self.conf.batch_size,
+                        num_workers=0,
+                        steps_per_epoch=1
                     )
                 else:
-                    mini_ds = WDSTilesWithFeatures(
-                        shards=one_shard,
-                        feature_dirs=self.conf.feature_dirs,
-                        feat_extractor=self.conf.feat_extractor,
-                        do_resize=self.conf.do_resize,
-                        img_size=self.conf.img_size,
-                        do_normalize=self.conf.do_normalize,
-                        pre_shuffle=0,
-                        post_shuffle=0,
-                        h5_cache_items=1,
-                    )
-
-                mini_loader = mini_ds.to_loader(
-                    batch_size=self.conf.batch_size,
-                    num_workers=0,
-                    steps_per_epoch=1
-                )
+                    # Non-WebDataset path (zip files, directories)
+                    mini_ds = self.conf.make_dataset(use_web_dataset=False)  # type: ignore[assignment]
+                    mini_loader = DataLoader(mini_ds, batch_size=min(self.conf.batch_size, len(mini_ds)), num_workers=0)  # type: ignore[arg-type]
 
                 batch = next(iter(mini_loader))
                 keys = {"img", "coords", "feat"}  # only show these

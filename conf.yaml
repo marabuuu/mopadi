@@ -21,21 +21,22 @@
 gpus: [0]
 # Directory where training output will be saved, typically at checkpoints/EXPERIMENT_NAME
 # The folders for autoencoder, latent DPM and classifiers will be created automatically under this directory
-base_dir: checkpoints/experiment_name
+base_dir: /mnt/bulk-saturn/maralampert/genhist/experiments/20260306_mopadi_training_attempt_from_scratch
 
 
 data:
   # Necessary for the autoencoder (step 1) and latent DPM training (optional step 2)
   # Directories containing .tar shards; can be multiple cohorts
   data_dirs:
-    - /path/to/tar/shards/folder
+    - /mnt/bulk-saturn/maralampert/genhist/data/BRCA-tumor-tiles-all
     #- /can/also/be/glob/pattern/for/specific/cohort/like/this/TCGA-CRC-*.tar
 
   feature_dirs:
-    - /path/to/folder/with/h5/feature/files
+    - /mnt/bulk-saturn/maralampert/genhist/experiments/20260126_trying_to_get_the_whole_picture_with_existing_diffusion_model_checkpoint_but_without_properly_handling_genomics/full_train_512/mopadi_features/train
 
   # Name of the feature extractor used to extract features; options: conch, conch1.5, virchow2, uni2
-  feature_extractor: conch
+  feature_extractor: genomic
+  use_web_dataset: false   
 
   # If one wants to limit the number of tiles for cohorts above the threshold
   #max_tiles_per_patient: 1000
@@ -47,14 +48,17 @@ data:
   # Conch 1.5:  448x448 px
   # Virchow2:   224x224 px
   # UNI2:       224x224 px
-  do_resize: true
+  do_resize: false
 
 
 # STEP 1: AUTOENCODER
 autoenc_model:
   # All the parameters that can be modified can be found in the configs/config.py. 
   # More default values can be found in configs/templates.py
-
+  img_size: 512
+  feat_dim: 512     
+  batch_size: 4
+  # ... other training params
   # Total samples - not the total number of tiles, but how many samples the model will see before the training 
   # is terminated, i.e., epoch number will depend on this number. Typically set high, and the training is stopped 
   # for examples after 72-98h on HPC when the FID score is low enough (<20 good; <10 excellent)

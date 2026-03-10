@@ -102,6 +102,7 @@ class TrainConfig(BaseConfig):
     enc_transform_dim: int = 1024  # feat projection layer
     enc_transform_nheads: int = 8  # feat projection layer
     enc_transform_num_layers: int = 2  # feat projection layer
+    use_web_dataset: bool = True  # Set to False for zip files instead of tar shards
     net_resblock_updown: bool = True
     net_beatgans_gradient_checkpoint: bool = False
     net_beatgans_resnet_two_cond: bool = False
@@ -228,9 +229,13 @@ class TrainConfig(BaseConfig):
     def make_eval_diffusion_conf(self):
         return self._make_diffusion_conf(T=self.T_eval)
 
-    def make_dataset(self, use_web_dataset=True, **kwargs):
-        urls = expand_shards(self.data_dirs)
+    def make_dataset(self, use_web_dataset=None, **kwargs):
+        # Use config value if not explicitly provided
+        if use_web_dataset is None:
+            use_web_dataset = self.use_web_dataset
+            
         if use_web_dataset:
+            urls = expand_shards(self.data_dirs)
             if self.feat_extractor == 'genomic':
                 return WDSTilesWithGenomicFeatures(
                     shards=urls,
@@ -249,7 +254,18 @@ class TrainConfig(BaseConfig):
                 feat_extractor=self.feat_extractor,
             )
         else:
-            if self.data_name == 'tcga_crc_512_conch_nolmdb' or self.data_name == 'tcga_brca_512_conch_nolmdb':
+            # Non-WebDataset path (local files, zips, etc.)
+            if self.feat_extractor == 'genomic':
+                # Zip file support for genomic conditioning (alternative to tar shards)
+                return ZipTilesWithGenomicFeatures(
+                    root_dirs=self.data_dirs,
+                    feature_dirs=self.feature_dirs,
+                    do_normalize=self.do_normalize,
+                    do_resize=self.do_resize,
+                    img_size=self.img_size,
+                    **kwargs
+                )
+            elif self.data_name == 'tcga_crc_512_conch_nolmdb' or self.data_name == 'tcga_brca_512_conch_nolmdb':
                 return ImageTileDatasetWithFeatures(root_dirs=[self.data_path], feature_dirs=self.feat_path, test_patients_file_path=self.test_patient_file, feat_extractor='conch', **kwargs)  # type: ignore[arg-type]
             elif self.data_name == 'tcga_all_conch':
                 return ImageTileDatasetWithFeatures(root_dirs=self.data_path, feature_dirs=self.feat_path, test_patients_file_path=None, feat_extractor='conch', cache_pickle_tiles_path='temp/tcga_all_tile_paths_all.pkl', **kwargs)  # type: ignore[arg-type]

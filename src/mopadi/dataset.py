@@ -12,6 +12,7 @@ import zipfile
 import random
 import hashlib
 import h5py
+import logging
 from itertools import islice
 import webdataset as wds
 from typing import Dict, Optional, List, Union
@@ -977,13 +978,14 @@ class WDSTilesWithGenomicFeatures(WDSTiles):
 
     No ``coords`` dataset is needed.
 
+    Tiles from patients without a matching .h5 file are **skipped**.
+
     Parameters
     ----------
     shards : str | list[str]
         WebDataset shard URLs.
     genomic_feature_dirs : dict[str, str] | list[str]
-        Mapping cohort → directory of `.h5` files, or a list of directories
-        (the first whose path contains the cohort name will be used).
+        Mapping cohort → directory of `.h5` files, or a list of directories.
     feat_key : str
         HDF5 dataset name that stores the genomic vector.  Default ``"feats"``.
     h5_cache_items : int
@@ -1005,58 +1007,287 @@ class WDSTilesWithGenomicFeatures(WDSTiles):
         self.genomic_feature_dirs = genomic_feature_dirs
         self.feat_key = feat_key
         self.cache = H5GenomicCache(max_open=h5_cache_items, feat_key=feat_key)
-        self._h5_path_cache: Dict[tuple, Optional[str]] = {}
+        self._h5_path_cache: Dict[str, Optional[str]] = {}
 
     def pipeline(self):
         base = super().pipeline()
         return base.map(self._add_genomic_features, handler=wds.handlers.warn_and_continue)
 
     def _add_genomic_features(self, sample):
-        cohort = sample["cohort"]
-        patient = sample["patient"]
+        raw_patient = sample["patient"]
+        base_id, dx_num = _extract_base_id_and_dx(raw_patient)
+        patient = f"{base_id}-DX{dx_num}"
 
-        h5_path = self._find_h5_path_for_patient(cohort, patient)
+        h5_path = _find_genomic_h5(patient, self.genomic_feature_dirs, self._h5_path_cache)
         if h5_path is None:
-            raise FileNotFoundError(
-                f"No genomic H5 for cohort={cohort} patient={patient}"
+            logging.warning(
+                f"No genomic H5 for patient={patient}; skipping tile"
             )
+            raise ValueError(f"No genomic H5 for patient={patient}")
 
         feat = self.cache.get(h5_path)  # numpy (D,)
         sample["feat"] = torch.from_numpy(feat).float()
         return sample
 
-    # ------ path resolution (same pattern as WDSTilesWithFeatures) ------
 
-    def _resolve_feat_dir(self, cohort: str) -> Optional[str]:
-        if isinstance(self.genomic_feature_dirs, dict):
-            return self.genomic_feature_dirs.get(cohort)
-        for d in self.genomic_feature_dirs:
-            if cohort in d:
-                return d
-        return None
+class ZipTilesWithGenomicFeatures(DefaultTilesDataset):
+    """
+    Loads tiles from zip files with **patient-level genomic feature vectors**.
+    
+    This is a non-streaming alternative to WDSTilesWithGenomicFeatures for use 
+    with zip files instead of WebDataset tar shards. Supports the same genomic 
+    conditioning but uses local zip file iteration.
 
-    def _find_h5_path_for_patient(self, cohort: str, patient: str) -> Optional[str]:
-        key = (cohort, patient)
-        if key in self._h5_path_cache:
-            return self._h5_path_cache[key]
+    Tiles from patients/samples without a matching .h5 file are **excluded** at
+    initialization time so they never appear during training.
 
-        feat_dir = self._resolve_feat_dir(cohort)
-        if feat_dir is None:
-            self._h5_path_cache[key] = None
-            return None
+    Expected structure:
+    - Tiles in zip files (loaded via DefaultTilesDataset)
+    - Genomic features in .h5 files (one patient per file)
+    
+    Parameters
+    ----------
+    root_dirs : list[str]
+        Directories containing zip files with tiles.
+    feature_dirs : list[str]
+        Directories containing .h5 genomic feature files.
+    feat_key : str
+        HDF5 dataset name for genomic features (default "feats").
+    h5_cache_items : int
+        Number of .h5 files to keep open (default 32).
+    **kwargs
+        Forwarded to DefaultTilesDataset.
+    """
 
-        candidates = [patient, _strip_trailing_hash(patient)]
-        seen: set = set()
-        candidates = [c for c in candidates if not (c in seen or seen.add(c))]
+    def __init__(
+        self,
+        root_dirs: List[str],
+        feature_dirs: Union[Dict[str, str], List[str]],
+        *,
+        feat_key: str = "feats",
+        h5_cache_items: int = 32,
+        skip_zip_validation: bool = False,
+        **kwargs,
+    ):
+        super().__init__(root_dirs=root_dirs, **kwargs)
+        self.feature_dirs = feature_dirs
+        self.feat_key = feat_key
+        self.cache = H5GenomicCache(max_open=h5_cache_items, feat_key=feat_key)
+        self._h5_path_cache: Dict[str, Optional[str]] = {}
 
-        for name in candidates:
-            path = os.path.join(feat_dir, f"{name}.h5")
+        # ---- filter out corrupted ZIP files ----
+        if not skip_zip_validation:
+            n_before = len(self.tile_paths)
+            corrupted_zips: set = set()
+            validated_zips: set = set()   # cache to avoid re-checking same zip
+            kept_tiles = []
+            for tp in self.tile_paths:
+                # Extract ZIP path from tile path
+                if ".zip:" in tp:
+                    zip_path = tp.split(":")[0]
+                else:
+                    zip_path = None
+
+                if zip_path:
+                    if zip_path in corrupted_zips:
+                        continue  # already known bad
+                    if zip_path not in validated_zips:
+                        if not _is_valid_zip(zip_path):
+                            corrupted_zips.add(zip_path)
+                            continue
+                        validated_zips.add(zip_path)
+                kept_tiles.append(tp)
+
+            self.tile_paths = kept_tiles
+            if corrupted_zips:
+                print(
+                    f"[ZipTilesWithGenomicFeatures] Removed {n_before - len(kept_tiles)} tiles "
+                    f"from {len(corrupted_zips)} corrupted/unreadable ZIP file(s)"
+                )
+            if len(corrupted_zips) <= 20:
+                for cz in sorted(corrupted_zips):
+                    print(f"  - corrupted: {cz}")
+
+        # ---- filter out tiles that have no matching genomic H5 ----
+        n_before = len(self.tile_paths)
+        kept = []
+        skipped_patients: set = set()
+        for tp in self.tile_paths:
+            patient_key = _tile_path_to_patient_key(tp)
+            h5 = _find_genomic_h5(patient_key, self.feature_dirs, self._h5_path_cache)
+            if h5 is not None:
+                kept.append(tp)
+            else:
+                skipped_patients.add(patient_key)
+        self.tile_paths = kept
+        n_after = len(self.tile_paths)
+        if skipped_patients:
+            print(
+                f"[ZipTilesWithGenomicFeatures] Removed {n_before - n_after} tiles "
+                f"from {len(skipped_patients)} patients/samples with no genomic H5 "
+                f"(kept {n_after}/{n_before} tiles)"
+            )
+            if len(skipped_patients) <= 20:
+                for sp in sorted(skipped_patients):
+                    print(f"  - no H5 for: {sp}")
+        # rebuild patient-to-indices after filtering
+        self._patient_to_indices = defaultdict(list)
+        for i, p in enumerate(self.tile_paths):
+            if ".zip:" in p:
+                pid = os.path.basename(p).split(".zip")[0].split(".")[0]
+            else:
+                pid = os.path.basename(os.path.dirname(p)).split(".")[0]
+            self._patient_to_indices[pid].append(i)
+
+    def __getitem__(self, index):
+        # Retry loop for corrupted images
+        max_retries = 10
+        for attempt in range(max_retries):
+            try:
+                # Get tile image from parent class
+                item = super().__getitem__(index)
+                tile_path = self.tile_paths[index]
+
+                patient_key = _tile_path_to_patient_key(tile_path)
+                h5_path = _find_genomic_h5(patient_key, self.feature_dirs, self._h5_path_cache)
+                # h5_path is guaranteed non-None because we filtered at init
+                feat = self.cache.get(h5_path)  # numpy (D,)
+                item["feat"] = torch.from_numpy(feat).float()
+                return item
+            except OSError as e:
+                if "truncated" in str(e).lower() or "cannot identify" in str(e).lower():
+                    # Try next sample
+                    logging.warning(
+                        f"Skipping corrupted image at index {index} "
+                        f"(attempt {attempt+1}/{max_retries}): {e}"
+                    )
+                    index = (index + 1) % len(self.tile_paths)
+                    if attempt == max_retries - 1:
+                        # All retries exhausted, raise
+                        raise RuntimeError(
+                            f"Could not find a valid tile after {max_retries} attempts "
+                            f"(all samples may be corrupted)"
+                        ) from e
+                else:
+                    # Re-raise if not a truncation/identification error
+                    raise
+
+
+def _is_valid_zip(zip_path: str) -> bool:
+    """
+    Check if a ZIP file is readable and not corrupted.
+
+    Returns True if the ZIP can be opened and its file list read successfully.
+    """
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as z:
+            z.testzip()  # Returns None if all files are OK
+        return True
+    except Exception as e:
+        logging.debug(f"Corrupted ZIP detected: {zip_path} ({e})")
+        return False
+
+
+def _extract_base_id_and_dx(name: str) -> tuple:
+    """
+    Extract base TCGA ID and DX number from a filename or patient identifier.
+
+    Examples::
+
+        'TCGA-B6-A0WV-01Z-00-DX1.UUID.hash'  → ('TCGA-B6-A0WV', 1)
+        'TCGA-D8-A13Y-01Z-00-DX2.UUID.hash'  → ('TCGA-D8-A13Y', 2)
+        'TCGA-PL-A8LV-01A-02-DX2.UUID.hash'  → ('TCGA-PL-A8LV', 2)
+        'TCGA-OK-A5Q2-01Z-00-DX4.UUID.hash'  → ('TCGA-OK-A5Q2', 4)
+        'TCGA-D8-A3Z5-01Z-00-DX3.UUID.hash'  → ('TCGA-D8-A3Z5', 3)
+
+    Returns
+    -------
+    tuple[str, int]
+        (base_tcga_id, dx_number).  Defaults to dx_number=1 if not found.
+    """
+    dx_match = re.search(r'-DX(\d+)', name)
+    dx_num = int(dx_match.group(1)) if dx_match else 1
+
+    tcga_match = re.match(r'(TCGA-[A-Za-z0-9]+-[A-Za-z0-9]+)', name)
+    if tcga_match:
+        base_id = tcga_match.group(1)
+    else:
+        base_id = name.split('-DX')[0].split('.')[0]
+
+    return base_id, dx_num
+
+
+def _tile_path_to_patient_key(tile_path: str) -> str:
+    """
+    Build a lookup key ``<base_id>-DX<n>`` from a tile path.
+
+    Works for both zip-internal paths (``/dir/TCGA-XX-XXXX-...-DX1.uuid.hash.zip:tile.png``)
+    and plain directory paths (``/dir/TCGA-XX-XXXX-...-DX1.uuid.hash/tile.png``).
+    """
+    if ".zip:" in tile_path:
+        # e.g. /path/TCGA-B6-A0WV-01Z-00-DX1.UUID.hash.zip:tile.png
+        zip_part = tile_path.split(":")[0]
+        basename = os.path.basename(zip_part).replace('.zip', '')
+    else:
+        # e.g. /path/TCGA-B6-A0WV-01Z-00-DX1.UUID.hash/tiles/tile.png  or  /path/.../tile.png
+        parent = os.path.dirname(tile_path)
+        # If there's a "tiles" subdir, go one level up
+        if os.path.basename(parent) == 'tiles':
+            parent = os.path.dirname(parent)
+        basename = os.path.basename(parent)
+
+    base_id, dx_num = _extract_base_id_and_dx(basename)
+    return f"{base_id}-DX{dx_num}"
+
+
+def _find_genomic_h5(
+    patient_key: str,
+    feature_dirs: Union[Dict[str, str], List[str]],
+    cache: Dict[str, Optional[str]],
+) -> Optional[str]:
+    """
+    Search *all* feature directories for a matching genomic .h5 file.
+
+    ``patient_key`` should be ``<base_id>-DX<n>`` (as returned by
+    :func:`_tile_path_to_patient_key`).
+
+    Candidate filenames tried (in order)::
+
+        DX1:  <base_id>.h5  →  <base_id>-DX1.h5
+        DX2+: <base_id>-DX<n>.h5  →  <base_id>.h5   (fallback: same patient)
+
+    Returns the first existing path, or ``None``.
+    """
+    if patient_key in cache:
+        return cache[patient_key]
+
+    base_id, dx_num = _extract_base_id_and_dx(patient_key)
+
+    candidates: List[str] = []
+    if dx_num == 1:
+        candidates.append(f"{base_id}.h5")
+        candidates.append(f"{base_id}-DX1.h5")
+    else:
+        candidates.append(f"{base_id}-DX{dx_num}.h5")
+        # Fallback: patient-level file (genomics are the same regardless of slide)
+        candidates.append(f"{base_id}.h5")
+
+    # Gather all directories to search
+    dirs: List[str] = []
+    if isinstance(feature_dirs, dict):
+        dirs = list(feature_dirs.values())
+    else:
+        dirs = list(feature_dirs)
+
+    for feat_dir in dirs:
+        for filename in candidates:
+            path = os.path.join(feat_dir, filename)
             if os.path.exists(path):
-                self._h5_path_cache[key] = path
+                cache[patient_key] = path
                 return path
 
-        self._h5_path_cache[key] = None
-        return None
+    cache[patient_key] = None
+    return None
 
 
 def _strip_trailing_hash(patient):

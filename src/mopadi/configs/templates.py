@@ -68,6 +68,7 @@ def default_autoenc(config):
     conf.data_dirs = list(data_config.get('data_dirs', []))
     conf.feature_dirs = list(data_config.get('feature_dirs', []))
     conf.feat_extractor = data_config.get('feature_extractor', None)
+    conf.use_web_dataset = data_config.get('use_web_dataset', True)
     #conf.test_patients_file_path = data_config.get('test_patients_file_path', None)
     #conf.process_only_zips = data_config.get('process_only_zips', False)
     #conf.cache_pickle_tiles_path = data_config.get('cache_pickle_tiles_path', None)
