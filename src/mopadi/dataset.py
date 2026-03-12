@@ -18,6 +18,15 @@ import webdataset as wds
 from typing import Dict, Optional, List, Union
 from collections import defaultdict, OrderedDict
 
+# public classes exported by this module
+__all__ = [
+    "DefaultTilesDataset",
+    "WDSTiles",
+    "WDSTilesWithGenomicFeatures",
+    "ZipTilesWithGenomicFeatures",
+    # add others as needed
+]
+
 import torch
 from torch.utils.data import Dataset, IterableDataset, Subset
 from torch.utils.data._utils.collate import default_collate

@@ -14,7 +14,7 @@ from pytorch_fid import fid_score
 
 import torch
 from torch import distributed
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset, IterableDataset
 from torch.utils.data.distributed import DistributedSampler
 from torchmetrics.image import MultiScaleStructuralSimilarityIndexMeasure
 from typing import cast, Any
