@@ -178,7 +178,15 @@ class TimeStyleSeperateEmbed(nn.Module):
             nn.SiLU(),
             linear(time_out_channels, time_out_channels),
         )
-        self.style = nn.Identity()
+        # Learned projection for the style/genomic conditioning vector.
+        # Using a 2-layer MLP instead of Identity lets the model align the
+        # incoming representation (e.g. PCA-RNAseq) to the diffusion model's
+        # internal conditioning scale before it is broadcast to every ResBlock.
+        self.style = nn.Sequential(
+            linear(time_out_channels, time_out_channels),
+            nn.SiLU(),
+            linear(time_out_channels, time_out_channels),
+        )
 
     def forward(self, time_emb=None, cond=None, **kwargs):
         if time_emb is None:

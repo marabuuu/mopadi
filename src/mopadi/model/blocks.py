@@ -131,9 +131,10 @@ class ResBlock(TimestepBlock):
             )
 
             if conf.two_cond:
+                # 2× out_channels → split into scale + shift, matching the time embedding path.
                 self.cond_emb_layers = nn.Sequential(
                     nn.SiLU(),
-                    linear(conf.cond_emb_channels, conf.out_channels),
+                    linear(conf.cond_emb_channels, 2 * conf.out_channels),
                 )
             #############################
             # OUT LAYERS (ignored when there is no condition)

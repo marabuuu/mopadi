@@ -131,7 +131,12 @@ def timestep_embedding(timesteps, dim, max_period=10000):
 def torch_checkpoint(func, args, flag, preserve_rng_state=False):
     # torch's gradient checkpoint works with automatic mixed precision, given torch >= 1.8
     if flag:
+        # use_reentrant=False: non-reentrant checkpoint does not re-run the
+        # forward inside the backward pass.  Reentrant mode (the default) fires
+        # DDP's autograd hooks twice per parameter (once per reentrant backward
+        # re-entry), causing "variable marked ready twice" crashes under DDP.
         return torch.utils.checkpoint.checkpoint(
-            func, *args, preserve_rng_state=preserve_rng_state)
+            func, *args, preserve_rng_state=preserve_rng_state,
+            use_reentrant=False)
     else:
         return func(*args)
