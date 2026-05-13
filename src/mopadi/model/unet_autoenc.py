@@ -89,6 +89,9 @@ class BeatGANsAutoencModel(BeatGANsUNetModel):
             # two cond: first = time emb, second = cond_emb
             emb = res.time_emb
             cond_emb = res.emb
+            # cond_emb is kept live here; gradient is zeroed downstream in
+            # blocks.py (zeros_like on cond_out) when _stop_cond_grad=True,
+            # which makes pass 1 unconditional without an explicit detach here.
         else:
             # one cond = combined of both time and cond
             emb = res.emb
@@ -126,6 +129,13 @@ class BeatGANsAutoencModel(BeatGANsUNetModel):
 
             # middle blocks
             h = self.middle_block(h, emb=mid_time_emb, cond=mid_cond_emb)
+            # Optional bottleneck cross-attention (set by GenomicCaLitModel via setattr).
+            # Skip CA entirely during the reconstruction pass (_ca_with_grad=False)
+            # so pass 1 is purely unconditional denoising with no genomic signal.
+            # CA is applied normally in pass 2 so pred_gap/CFL can train it.
+            _gca = getattr(self, 'genomic_cross_attn', None)
+            if _gca is not None and cond is not None and getattr(self, '_ca_with_grad', True):
+                h = _gca(h, cond)
         else:
             # no lateral connections
             # happens when training only the autonecoder

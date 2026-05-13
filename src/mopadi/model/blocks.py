@@ -239,6 +239,13 @@ class ResBlock(TimestepBlock):
                     cond_out = None
                 else:
                     cond_out = self.cond_emb_layers(cond).type(h.dtype)
+                    # Zero out (not just detach) genomic FiLM during the reconstruction
+                    # pass so that pass 1 is purely unconditional denoising.
+                    # detach() would still let the backbone see random FiLM noise and
+                    # train out_layers to suppress it; zeros makes FiLM a no-op, so
+                    # the backbone has no anti-FiLM gradient to overcome in pass 2.
+                    if getattr(self, '_stop_cond_grad', False):
+                        cond_out = th.zeros_like(cond_out)
 
                 if cond_out is not None:
                     while len(cond_out.shape) < len(h.shape):

@@ -2,6 +2,7 @@
 Various utilities for neural networks.
 """
 
+from contextlib import nullcontext
 from enum import Enum
 import math
 from typing import Optional
@@ -131,12 +132,23 @@ def timestep_embedding(timesteps, dim, max_period=10000):
 def torch_checkpoint(func, args, flag, preserve_rng_state=False):
     # torch's gradient checkpoint works with automatic mixed precision, given torch >= 1.8
     if flag:
+        autocast_enabled = th.is_autocast_enabled()
+        autocast_dtype = th.get_autocast_gpu_dtype() if autocast_enabled else None
+
+        def context_fn():
+            if autocast_enabled:
+                return (
+                    th.autocast(device_type="cuda", dtype=autocast_dtype),
+                    th.autocast(device_type="cuda", dtype=autocast_dtype),
+                )
+            return nullcontext(), nullcontext()
+
         # use_reentrant=False: non-reentrant checkpoint does not re-run the
         # forward inside the backward pass.  Reentrant mode (the default) fires
         # DDP's autograd hooks twice per parameter (once per reentrant backward
         # re-entry), causing "variable marked ready twice" crashes under DDP.
         return torch.utils.checkpoint.checkpoint(
             func, *args, preserve_rng_state=preserve_rng_state,
-            use_reentrant=False)
+            use_reentrant=False, context_fn=context_fn)
     else:
         return func(*args)
